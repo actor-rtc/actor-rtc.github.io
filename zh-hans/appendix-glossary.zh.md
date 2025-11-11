@@ -403,7 +403,7 @@ WebRTC DataChannel 的服务质量 (Quality of Service) 配置枚举，定义数
 **类型定义**: `actr_runtime::transport::lane::DataLane` enum
 
 **枚举变体**:
-- **Inproc（进程内）**：使用 tokio::sync::mpsc，直接传递 MessageEnvelope 对象（零序列化）。接口：`send_envelope()`/`recv_envelope()`
+- **Inproc（进程内）**：使用 tokio::sync::mpsc，直接传递 RpcEnvelope 对象（零序列化）。接口：`send_envelope()`/`recv_envelope()`
 - **Outproc（跨进程）**：使用 WebRTC DataChannel / WebSocket（共享物理连接），传递 Bytes（需序列化）。接口：`send()`/`recv()`
 
 **关键特性**：
@@ -466,7 +466,7 @@ MediaRtp → [WebRtcMediaTrack]  // 原生 RTP 通道
 ### InprocTransportManager
 进程内传输管理器，负责 Shell（应用外壳）与 Workload 之间的零序列化消息传递。
 
-**实现方式**: 使用 `tokio::sync::mpsc` 通道，直接传递 `MessageEnvelope` 对象
+**实现方式**: 使用 `tokio::sync::mpsc` 通道，直接传递 `RpcEnvelope` 对象
 
 ### OutprocTransportManager
 跨进程传输管理器，管理多个 `DestTransport` 实例（每个目标 Actor 一个）。

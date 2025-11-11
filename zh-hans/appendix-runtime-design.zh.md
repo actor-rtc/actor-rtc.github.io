@@ -286,7 +286,7 @@ impl ActrSystem {
 
 use std::sync::Arc;
 use actr_framework::{Workload, MessageRouter, Lifecycle, Context};
-use actr_protocol::{ActorResult, ActrId, MessageEnvelope, ActrType};
+use actr_protocol::{ActorResult, ActrId, RpcEnvelope, ActrType};
 use bytes::Bytes;
 
 /// ActrNode - ActrSystem + Workload（1:1 组合）
@@ -344,7 +344,7 @@ impl<W: Workload> ActrNode<W> {
     /// - 编译器可内联整个调用链
     /// - match 分支可以直接展开
     /// - 最终生成的代码接近手写的 match 表达式
-    pub async fn handle_incoming(&self, envelope: MessageEnvelope) -> ActorResult<Bytes> {
+    pub async fn handle_incoming(&self, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         // 创建 Context
         let ctx = self.context_factory.create(
             self.actor_id.as_ref().unwrap(),
@@ -617,7 +617,7 @@ impl Scheduler {
     /// - → W::MessageRouter::route()
     /// - → match route_key
     /// - → 用户方法（可内联）
-    async fn dispatch<W: Workload>(node: &ActrNode<W>, envelope: MessageEnvelope) {
+    async fn dispatch<W: Workload>(node: &ActrNode<W>, envelope: RpcEnvelope) {
         let start = std::time::Instant::now();
 
         match node.handle_incoming(envelope).await {
@@ -870,7 +870,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use bytes::Bytes;
 use actr_framework::OutboundGate;
-use actr_protocol::{ActorResult, ActrId, MessageEnvelope};
+use actr_protocol::{ActorResult, ActrId, RpcEnvelope};
 use crate::Transport;
 
 /// TransportGate - OutboundGate 的具体实现
@@ -895,7 +895,7 @@ impl OutboundGate for TransportGate {
     async fn send_request(
         &self,
         target: &ActrId,
-        envelope: MessageEnvelope,
+        envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
         // 1. 根据 route_key 或配置选择 Lane
         let lane = self.select_lane(&envelope);
@@ -910,7 +910,7 @@ impl OutboundGate for TransportGate {
     async fn send_message(
         &self,
         target: &ActrId,
-        envelope: MessageEnvelope,
+        envelope: RpcEnvelope,
     ) -> ActorResult<()> {
         // 1. 根据 route_key 或配置选择 Lane
         let lane = self.select_lane(&envelope);
@@ -928,7 +928,7 @@ impl TransportGate {
     /// # 策略
     /// - 从 protobuf option 读取 lane_type
     /// - 默认使用 RELIABLE Lane
-    fn select_lane(&self, envelope: &MessageEnvelope) -> LaneType {
+    fn select_lane(&self, envelope: &RpcEnvelope) -> LaneType {
         // TODO: 从 envelope.metadata 或配置中获取 lane_type
         LaneType::Reliable
     }
@@ -1085,7 +1085,7 @@ pub use actr_framework::{
 
 // 协议类型
 pub use actr_protocol::{
-    ActorResult, ActrId, ActrType, MessageEnvelope,
+    ActorResult, ActrId, ActrType, RpcEnvelope,
     StreamChunk, MediaFrame, ProtocolError,
 };
 
