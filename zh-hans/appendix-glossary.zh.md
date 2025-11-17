@@ -96,10 +96,10 @@ Actr 进程的全局唯一标识符，用于标识运行时的具体实例。
 
 **对比表**:
 
-| 术语 | 作用域 | 用途 | 示例 |
-|------|--------|------|------|
-| **ActrType** | 服务类型级别 | 服务发现、权限控制 | `acme:echo-service` |
-| **ActrId** | 运行时实例级别 | 消息路由、实例追踪 | `acme:echo-service:550e8400-...` |
+| 术语         | 作用域         | 用途               | 示例                             |
+| ------------ | -------------- | ------------------ | -------------------------------- |
+| **ActrType** | 服务类型级别   | 服务发现、权限控制 | `acme:echo-service`              |
+| **ActrId**   | 运行时实例级别 | 消息路由、实例追踪 | `acme:echo-service:550e8400-...` |
 
 ### Realm（领域）
 框架的多租户与安全隔离机制。每个 Actor 属于一个 `Realm`（通过 `realm_id` 标识），默认情况下，不同 `Realm` 之间的 Actor 完全隔离。
@@ -261,7 +261,7 @@ Scheduler → MessageHandler::handle_message()
 ```
 
 **实现方式**：
-- **自动生成**（推荐）：`actr-cli gen` 为 Workload 自动实现此 trait
+- **自动生成**（推荐）：`actr gen` 为 Workload 自动实现此 trait
 - **手动实现**：高级场景可手动实现以自定义消息拦截逻辑
 
 **代码定义**：`actr_framework::MessageHandler` trait
@@ -626,7 +626,7 @@ message EchoResponse {
 
 **与其他术语的关系**：
 - **IDL → Contract**: `.proto` 文件定义 Contract（契约）
-- **IDL → Codegen**: `actr-cli gen` 基于 IDL 生成代码
+- **IDL → Codegen**: `actr gen` 基于 IDL 生成代码
 - **IDL → Fingerprint**: 通过分析 IDL 语义计算 Fingerprint
 
 ### Contract (服务契约)
@@ -635,7 +635,7 @@ message EchoResponse {
 **核心理念 - 契约优先开发 (Contract-First)**：
 
 1. **设计阶段**: 先编写 `.proto` 文件，明确服务边界
-2. **生成阶段**: 运行 `actr-cli gen` 自动生成代码
+2. **生成阶段**: 运行 `actr gen` 自动生成代码
 3. **实现阶段**: 开发者实现生成的 Handler trait
 4. **验证阶段**: 编译器确保实现符合契约
 
@@ -659,7 +659,7 @@ message EchoResponse {
 **参考文档**: [3.3 应用层 Proto 契约](./3.3-application-proto-contract.zh.md)
 
 ### Codegen (代码生成)
-基于 `.proto` 契约自动生成 Rust 代码的过程。由 `actr-cli gen` 命令触发，调用 `protoc` + `actr-protoc-plugin` 生成类型安全的 trait 和消息类型。
+基于 `.proto` 契约自动生成 Rust 代码的过程。由 `actr gen` 命令触发，调用 `protoc` + `actr-protoc-plugin` 生成类型安全的 trait 和消息类型。
 
 **生成的核心组件**：
 
@@ -712,7 +712,7 @@ message EchoResponse {
 - **零运行时开销**: 使用静态分发，无 dyn trait object
 
 **工具链**:
-- `actr-cli gen`: 主命令
+- `actr gen`: 主命令
 - `protoc`: Protobuf 编译器
 - `actr-protoc-plugin`: 框架定制的 protoc 插件
 
@@ -733,7 +733,7 @@ message EchoResponse {
 
 **关键优势**:
 - **防止版本漂移**: 即使服务提供者更新了 `.proto`，你的应用仍使用锁定的版本
-- **显式升级**: 必须手动运行 `actr-cli install --upgrade` 才能更新依赖
+- **显式升级**: 必须手动运行 `actr install --upgrade` 才能更新依赖
 - **协商透明**: 运行时自动进行版本协商，无需手动检查
 
 **计算方式**: 由 `actr-version` 模块通过语义分析（AST 哈希）计算
@@ -785,7 +785,7 @@ url = "ws://localhost:8081"
 - `[acl]`: 访问控制列表
 
 ### actr.lock.toml
-由 `actr-cli install` 后生成的文件，用于锁定项目所依赖的外部服务版本指纹。
+由 `actr install` 后生成的文件，用于锁定项目所依赖的外部服务版本指纹。
 
 **作用**:
 - 确保构建的可重现性
@@ -811,22 +811,22 @@ proto_files = ["storage.v1.proto"]
 - 加速后续启动
 - 当依赖服务发生变更后，系统会判断新版本是否与当前所使用的存根兼容
 
-### actr-cli
+### actr
 Actor-RTC 框架的命令行工具，提供项目管理、依赖安装、代码生成、构建和运行等功能。
 
 **核心命令**：
-- `actr-cli init <name>`: 创建新项目骨架
-- `actr-cli install`: 安装外部服务依赖（下载 `.proto`，生成 `actr.lock.toml`）
-- `actr-cli gen`: 基于 `.proto` 生成代码
-- `actr-cli build`: 编译项目
-- `actr-cli run [script]`: 运行脚本（如 `test`, `dev`）
+- `actr init <name>`: 创建新项目骨架
+- `actr install`: 安装外部服务依赖（下载 `.proto`，生成 `actr.lock.toml`）
+- `actr gen`: 基于 `.proto` 生成代码
+- `actr build`: 编译项目
+- `actr run [script]`: 运行脚本（如 `test`, `dev`）
 
 **配置文件**:
 - `Actr.toml`: 项目清单
 - `actr.lock.toml`: 依赖锁定文件
 - `compat.lock.toml`: 兼容性缓存文件
 
-**参考文档**: [2.4 项目清单与 CLI](./2.4-project-manifest-and-cli.zh.md), [4.7 actr-cli 命令行](./4.7-actr-cli.zh.md)
+**参考文档**: [2.4 项目清单与 CLI](./2.4-project-manifest-and-cli.zh.md), [4.7 actr 命令行](./4.7-actr.zh.md)
 
 ### Runtime Compatibility Negotiation（运行时兼容性协商）
 当消费者 Actor 在网络中找不到其 `actr.lock.toml` 锁定的、指纹完全匹配的服务实例时的协商机制。
@@ -861,12 +861,12 @@ Actor-RTC 框架的命令行工具，提供项目管理、依赖安装、代码�
 
 ## 核心概念辨析
 
-| 术语 (Term) | 角色 | 描述 |
-| :--- | :--- | :--- |
-| **Actor / 宏观 Actor** | **概念 / 进程** | 指代 Actor 模型中的**并发单元**这一抽象概念，在本框架的语境下，特指一个独立的**操作系统进程**。它是拥有独立状态、通过消息与网络中其他 Actor 隔离的"宏观"实体。 |
-| **ActrSystem** | **框架运行时** | 框架提供的**运行时环境**，是 Actor 赖以生存的"操作系统"。它负责管理底层网络、消息调度、生命周期事件等，为上层业务逻辑提供动力。 |
-| **Workload（Load）** | **业务逻辑实现** | 指**开发者编写的、实现了具体业务逻辑的 `struct`**。它实现由 `.proto` 文件生成的服务 Handler trait（如 `EchoServiceHandler`），通过代码生成器的 blanket 实现自动获得 `Workload` trait 和 `MessageHandler` trait，是整个进程中真正执行业务计算的部分。简称 **Load**。 |
-| **ActrNode** | **进程的完整形态** | 一个正在运行的进程节点的**完整描述**。它是框架运行时与业务逻辑的组合体，即 **`ActrNode = ActrSystem + Workload`**。 |
+| 术语 (Term)            | 角色               | 描述                                                                                                                                                                                                                                                                |
+| :--------------------- | :----------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Actor / 宏观 Actor** | **概念 / 进程**    | 指代 Actor 模型中的**并发单元**这一抽象概念，在本框架的语境下，特指一个独立的**操作系统进程**。它是拥有独立状态、通过消息与网络中其他 Actor 隔离的"宏观"实体。                                                                                                      |
+| **ActrSystem**         | **框架运行时**     | 框架提供的**运行时环境**，是 Actor 赖以生存的"操作系统"。它负责管理底层网络、消息调度、生命周期事件等，为上层业务逻辑提供动力。                                                                                                                                     |
+| **Workload（Load）**   | **业务逻辑实现**   | 指**开发者编写的、实现了具体业务逻辑的 `struct`**。它实现由 `.proto` 文件生成的服务 Handler trait（如 `EchoServiceHandler`），通过代码生成器的 blanket 实现自动获得 `Workload` trait 和 `MessageHandler` trait，是整个进程中真正执行业务计算的部分。简称 **Load**。 |
+| **ActrNode**           | **进程的完整形态** | 一个正在运行的进程节点的**完整描述**。它是框架运行时与业务逻辑的组合体，即 **`ActrNode = ActrSystem + Workload`**。                                                                                                                                                 |
 
 ---
 

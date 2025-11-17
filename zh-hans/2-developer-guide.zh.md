@@ -23,7 +23,7 @@ graph TB
         B["fa:fa-edit <b>2. 声明意图</b><br/><i>(Actr.toml)</i>"]
         C["fa:fa-cogs <b>3. 实现业务逻辑</b><br/><i>(src/main.rs)</i>"]
         
-        subgraph "工具链 (actr-cli)"
+        subgraph "工具链 (actr)"
             direction LR
             Install["<b>install</b><br/>(获取依赖)"]
             Gen["<b>gen</b><br/>(生成代码)"]
@@ -32,10 +32,10 @@ graph TB
     end
     
     A --> B
-    B -- "actr-cli install" --> Install
-    Install -- "actr-cli gen" --> Gen
+    B -- "actr install" --> Install
+    Install -- "actr gen" --> Gen
     Gen --> C
-    C -- "actr-cli run" --> Run
+    C -- "actr run" --> Run
     
     C -.->|迭代| A
 ```
@@ -43,10 +43,10 @@ graph TB
 **开发者的工作流程**:
 1.  **定义/修改契约**: 在 `.proto` 文件中定义服务接口和数据结构。
 2.  **声明意图**: 在 `Actr.toml` 中声明 Actor 的类型、提供的服务、依赖的服务以及如何运行它。
-3.  **安装依赖**: (如果依赖外部服务) 运行 `actr-cli install`，工具会下载远程 `.proto` 依赖并生成 `actr.lock.toml`。
-4.  **生成代码**: 运行 `actr-cli gen`，工具会根据 `.proto` 契约生成 Rust 代码（包括 `Handler` trait 和消息类型）。
+3.  **安装依赖**: (如果依赖外部服务) 运行 `actr install`，工具会下载远程 `.proto` 依赖并生成 `actr.lock.toml`。
+4.  **生成代码**: 运行 `actr gen`，工具会根据 `.proto` 契约生成 Rust 代码（包括 `Handler` trait 和消息类型）。
 5.  **实现业务**: 在 Rust 代码中（如 `src/main.rs`）为你的业务结构体实现生成的 `Handler` trait。
-6.  **运行测试**: 运行 `actr-cli run test` 或 `actr-cli run` 来启动和测试应用。
+6.  **运行测试**: 运行 `actr run test` 或 `actr run` 来启动和测试应用。
 7.  重复以上步骤，持续迭代。
 
 ### 1.5. 服务身份与版本管理
@@ -99,10 +99,10 @@ Fingerprint 是基于 `.proto` 文件内容计算的**语义哈希**，用于精
 
 **场景 1: 安装依赖**
 
-当你运行 `actr-cli install` 时，会提示你选择服务的 fingerprint：
+当你运行 `actr install` 时，会提示你选择服务的 fingerprint：
 
 ```bash
-$ actr-cli install
+$ actr install
 Found 3 versions for 'acme:storage-service':
 1. semantic:abc123 (2024-01-15) - v1.2.0
 2. semantic:def456 (2024-02-20) - v1.3.0
@@ -141,7 +141,7 @@ ActrNode B 提供 "acme:storage-service" (fingerprint: semantic:ghi789)
 **关键优势**:
 
 1. **防止版本漂移**: 即使服务提供者更新了 `.proto`，你的应用仍使用锁定的版本
-2. **显式升级**: 必须手动运行 `actr-cli install --upgrade` 才能更新依赖
+2. **显式升级**: 必须手动运行 `actr install --upgrade` 才能更新依赖
 3. **协商透明**: 运行时自动进行版本协商，无需手动检查
 
 #### **ActrId - 运行时实例标识**
@@ -178,7 +178,7 @@ ActrNode B 提供 "acme:storage-service" (fingerprint: semantic:ghi789)
    service EchoService { ... }
    ```
 
-2. **定期检查依赖更新**: 运行 `actr-cli install --check-updates`
+2. **定期检查依赖更新**: 运行 `actr install --check-updates`
 
 3. **测试环境先验证**: 升级依赖 fingerprint 前，在测试环境验证兼容性
 
@@ -202,16 +202,16 @@ ActrNode B 提供 "acme:storage-service" (fingerprint: semantic:ghi789)
     *   **Ubuntu/Debian**: `sudo apt update && sudo apt install protobuf-compiler`
     *   **macOS (Homebrew)**: `brew install protobuf`
 *   **本框架的命令行工具**:
-    `cargo install actr-cli` (待发布)
+    `cargo install actr` (待发布)
 
 ### 2.2. 项目搭建
 
 #### **Step 1: 创建项目**
 
-使用 `actr-cli init` 来创建一个新的 Actor 项目骨架。
+使用 `actr init` 来创建一个新的 Actor 项目骨架。
 
 ```bash
-actr-cli init webrtc-echo-actor
+actr init webrtc-echo-actor
 cd webrtc-echo-actor
 ```
 工具会生成一个包含 `Actr.toml`、`proto/echo.v1.proto` 和 `src/main.rs` 等文件的项目结构。
@@ -265,11 +265,11 @@ service EchoService {
 
 #### **Step 4: 生成代码**
 
-在实现业务逻辑之前，先运行一次 `gen` 命令，让 `actr-cli` 为我们生成所需的 Rust 代码。
+在实现业务逻辑之前，先运行一次 `gen` 命令，让 `actr` 为我们生成所需的 Rust 代码。
 
 ```bash
 # 此命令会解析 proto 文件，并生成服务端 trait 和其他类型
-actr-cli gen
+actr gen
 ```
 执行后，`src/generated/` 目录中会生成相应的 Rust 代码，我们将在下一步中实现它。
 
@@ -348,10 +348,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```bash
 # 如果修改了 .proto 文件，需要再次运行 gen
-actr-cli gen
+actr gen
 
 # 运行在 Actr.toml 中定义的 "run" 脚本来编译和启动应用
-actr-cli run
+actr run
 ```
 
 如果一切顺利，你将看到 "Echo Actor 正在启动..." 的输出，代表你的第一个 `actr` 应用已成功启动并连接到信令服务器。
@@ -360,8 +360,8 @@ actr-cli run
 
 ## 3. 核心 API 与最佳实践
 
-*   **`Actr.toml`**: 项目的"意图"声明文件，是所有 `actr-cli` 命令的输入源，也是 SDK 运行时的配置来源。
-*   **`actr-cli`**: 统一的开发工具链，负责依赖、代码生成、构建和执行。
+*   **`Actr.toml`**: 项目的"意图"声明文件，是所有 `actr` 命令的输入源，也是 SDK 运行时的配置来源。
+*   **`actr`**: 统一的开发工具链，负责依赖、代码生成、构建和执行。
 *   **服务 Handler Trait**: 代码生成器为 `.proto` 中的每个 `service` 生成一个 trait（如 `EchoServiceHandler`）。实现这个 trait 即可处理该服务的所有 RPC 方法。
 *   **自动生成的 trait 实现**: 代码生成器通过 blanket impl 自动为你的 `struct` 提供 `MessageHandler<M>` 和 `Workload` trait 实现，实现零成本抽象。
 *   **`Context` 对象**: Actor 在运行时与系统交互的句柄。用它来获取调用者信息 (`caller_id`)、记录日志 (`logger`)、安排延迟任务 (`schedule_tell`) 或调用其他 Actor。
