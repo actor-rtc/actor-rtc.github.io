@@ -509,10 +509,10 @@ db_path = "./data/mailbox.db"
 └─────────────────────────────────────────────────────────┘
                          ▼
 ┌─────────────────────────────────────────────────────────┐
-│  6. 对端 InboundPacketDispatcher 路由                    │
+│  6. 对端 WebRtcGate 路由                                 │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│  match packet.payload_type {                             │
-│      RpcReliable | RpcSignal => dispatch_to_mailbox(),  │
+│  match payload_type {                                    │
+│      RpcReliable | RpcSignal => mailbox.enqueue(),       │
 │      ...                                                 │
 │  }                                                       │
 └─────────────────────────────────────────────────────────┘
@@ -544,11 +544,11 @@ db_path = "./data/mailbox.db"
 └─────────────────────────────────────────────────────────┘
                          ▼
 ┌─────────────────────────────────────────────────────────┐
-│  4. 对端 InboundPacketDispatcher 路由                    │
+│  4. 对端 WebRtcGate 路由                                 │
 │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  │
-│  match packet.payload_type {                             │
+│  match payload_type {                                    │
 │      StreamReliable | StreamLatencyFirst =>              │
-│          dispatch_to_stream_chunk(),  // 直接回调        │
+│          DataStreamRegistry.dispatch(),  // 直接回调     │
 │      ...                                                 │
 │  }                                                       │
 └─────────────────────────────────────────────────────────┘
