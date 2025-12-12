@@ -13,10 +13,29 @@ Actrix 认证系统由以下核心组件构成：
 └─────────┘     └──────────────┘     └────────┘     └────────┘
      │                  │                   │             │
      │                  │                   │             │
-     ▼                  ▼                   ▼             ▼
-身份管理            路由转发            凭证签发       密钥管理
-TURN认证           凭证验证            身份验证       密钥轮换
+     │                  ▼                   ▼             ▼
+     │              路由转发            凭证签发       密钥管理
+     │              凭证验证            身份验证       密钥轮换
+     │
+     │          ┌──────────────┐
+     └─────────▶│     TURN     │
+                │  中继服务器   │
+                └──────────────┘
+                        │
+                        ▼
+                  媒体中继认证
+                  LRU 缓存
 ```
+
+**核心组件职责**：
+
+| 组件 | 职责 | 关键功能 |
+|-----|------|---------|
+| **actr 客户端** | 身份管理 | 持有凭证、发起认证、TURN 连接 |
+| **Signaling** | 路由转发 | 消息路由、凭证验证、容忍期判断 |
+| **AIS** | 凭证签发 | 生成凭证、身份验证、密钥缓存 |
+| **KS** | 密钥管理 | 生成密钥对、密钥轮换、容忍期配置 |
+| **TURN** | 媒体中继 | NAT 穿透、PSK 认证、缓存优化 |
 
 **核心概念**：
 
@@ -27,6 +46,7 @@ TURN认证           凭证验证            身份验证       密钥轮换
 | **PSK** | 预共享密钥，用于 TURN 认证（32 字节随机数） |
 | **Key ID** | 密钥版本标识符，支持密钥轮换 |
 | **Realm** | 安全域/租户，用于多租户隔离 |
+| **Tolerance Period** | 容忍期，密钥过期后的缓冲时间（默认 3600 秒） |
 
 ---
 
@@ -132,21 +152,45 @@ sequenceDiagram
 **关键步骤**：
 1. actr 发送 `ActrToSignaling` 消息（携带 credential）
 2. Signaling 提取 `token_key_id`
-3. Signaling 从缓存或 KS 获取 `secret_key`
+3. Signaling 从 SQLite 缓存或 KS 获取密钥信息（包含 `secret_key`、`expires_at`、`tolerance_seconds`）
 4. Signaling 使用 ECIES 解密 credential
 5. Signaling 验证 Claims（realm_id、actor_id、过期时间）
-6. 认证成功后处理业务逻辑
+6. Signaling 判断密钥是否在容忍期内：
+   - 如果 `expires_at < now <= expires_at + tolerance_seconds`，则在容忍期
+   - 如果 `now > expires_at + tolerance_seconds`，密钥已完全失效
+7. 如果密钥在容忍期内，向 actr 发送续期提示
+8. 认证成功后处理业务逻辑
 
 **缓存优化**：
-- SecretKeyCache（Signaling）：永久缓存（支持多版本密钥）
+- KeyCache（Signaling）：SQLite 持久化缓存（支持多版本密钥）
+- 缓存包含：`secret_key`、`expires_at`、`tolerance_seconds`
 - 缓存命中率 > 95%
 
 **容忍期机制**：
-- 密钥过期后进入容忍期（默认 1 小时）
-- 保证密钥轮换期间服务连续性
+- KS 返回真实的 `expires_at`（不再包含容忍期）
+- KS 同时返回 `tolerance_seconds`（默认 3600 秒）
+- Signaling 根据 `expires_at` 和 `tolerance_seconds` 自行判断是否在容忍期
+- 容忍期内的密钥可以继续使用，但会提示客户端更新凭证
+- 超过容忍期的密钥将被拒绝
+
+**容忍期判断逻辑**：
+```rust
+// expires_at: 密钥过期时间（Unix 时间戳）
+// tolerance_seconds: 容忍期时长（秒）
+// now: 当前时间（Unix 时间戳）
+
+let in_tolerance_period = if expires_at > 0 {
+    // 在容忍期内：已过期但未超过容忍期
+    expires_at < now && now <= expires_at + tolerance_seconds
+} else {
+    false // 永不过期的密钥不在容忍期
+};
+```
 
 **关键代码位置**：
-- `actrix/crates/signaling/src/authenticator.rs`
+- `actrix/crates/common/src/aid/credential/validator.rs` (容忍期判断)
+- `actrix/crates/common/src/aid/key_cache.rs` (SQLite 缓存)
+- `actrix/crates/signaling/src/authenticator.rs` (认证流程)
 
 👉 **详细文档**：[5.2-authentication-flow.md](./5.2-authentication-flow.md)
 
