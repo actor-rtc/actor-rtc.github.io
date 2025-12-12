@@ -61,7 +61,7 @@ sequenceDiagram
     participant T as TURN
 
     %% 注册流程
-    rect rgb(200, 230, 255)
+    rect
     Note over A,KS: 1. 注册流程 (首次接入)
     A->>S: RegisterRequest
     S->>AIS: 转发注册请求
@@ -73,7 +73,7 @@ sequenceDiagram
     end
 
     %% 业务认证
-    rect rgb(255, 240, 200)
+    rect
     Note over A,S: 2. 业务请求认证
     A->>S: 业务请求 + credential
     S->>S: 验证 credential<br/>(缓存密钥)
@@ -85,7 +85,7 @@ sequenceDiagram
     end
 
     %% TURN认证
-    rect rgb(200, 255, 200)
+    rect
     Note over A,T: 3. TURN 认证
     A->>A: 构造 TURN username<br/>(Claims + encrypted PSK)
     A->>T: TURN Allocate Request
@@ -94,7 +94,7 @@ sequenceDiagram
     end
 
     %% 凭证更新
-    rect rgb(255, 230, 200)
+    rect
     Note over A,AIS: 4. 凭证更新 (过期前5分钟)
     A->>S: CredentialUpdateRequest<br/>(携带旧凭证)
     S->>S: 验证旧凭证
@@ -105,7 +105,7 @@ sequenceDiagram
     end
 
     %% 密钥轮换
-    rect rgb(230, 200, 255)
+    rect
     Note over AIS,KS: 5. 密钥轮换 (后台定时任务)
     AIS->>AIS: 检测密钥将过期<br/>(提前10分钟)
     AIS->>KS: 生成新密钥
