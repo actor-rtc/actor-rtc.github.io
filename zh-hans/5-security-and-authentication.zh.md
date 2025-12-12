@@ -61,7 +61,6 @@ sequenceDiagram
     participant T as TURN
 
     %% 注册流程
-    rect
     Note over A,KS: 1. 注册流程 (首次接入)
     A->>S: RegisterRequest
     S->>AIS: 转发注册请求
@@ -70,10 +69,8 @@ sequenceDiagram
     AIS->>AIS: 生成 ActrId + PSK<br/>加密 Credential
     AIS-->>S: 返回身份凭证
     S-->>A: actr_id + credential + psk
-    end
 
     %% 业务认证
-    rect
     Note over A,S: 2. 业务请求认证
     A->>S: 业务请求 + credential
     S->>S: 验证 credential<br/>(缓存密钥)
@@ -82,19 +79,15 @@ sequenceDiagram
     else 凭证过期
         S-->>A: 需要更新凭证
     end
-    end
 
     %% TURN认证
-    rect
     Note over A,T: 3. TURN 认证
     A->>A: 构造 TURN username<br/>(Claims + encrypted PSK)
     A->>T: TURN Allocate Request
     T->>T: 解密获取 PSK<br/>(LRU缓存认证密钥)
     T-->>A: 分配中继地址
-    end
 
     %% 凭证更新
-    rect
     Note over A,AIS: 4. 凭证更新 (过期前5分钟)
     A->>S: CredentialUpdateRequest<br/>(携带旧凭证)
     S->>S: 验证旧凭证
@@ -102,10 +95,8 @@ sequenceDiagram
     AIS->>AIS: 签发新凭证<br/>(保持 actr_id + psk 不变)
     AIS-->>S: 新凭证
     S-->>A: credential + expires_at
-    end
 
     %% 密钥轮换
-    rect
     Note over AIS,KS: 5. 密钥轮换 (后台定时任务)
     AIS->>AIS: 检测密钥将过期<br/>(提前10分钟)
     AIS->>KS: 生成新密钥
@@ -113,7 +104,6 @@ sequenceDiagram
     KS-->>AIS: key_id + public_key
     AIS->>AIS: 更新本地缓存
     Note over KS: 旧密钥进入容忍期<br/>(默认1小时)
-    end
 ```
 
 ---
