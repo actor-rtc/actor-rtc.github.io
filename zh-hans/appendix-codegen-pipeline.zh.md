@@ -75,9 +75,15 @@ cd examples/my-new-example
 
 # 1) 创建 Actr.toml
 cat > Actr.toml <<'EOF'
-[actr]
+[package]
+name = "my-new-example"
+
+[package.actr_type]
 manufacturer = "acme"
-realm = "local"
+name = "my-new-service"
+
+[system.deployment]
+realm = 0
 EOF
 
 # 2) 新建 proto 目录并编写 .proto

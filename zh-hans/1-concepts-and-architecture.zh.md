@@ -69,8 +69,13 @@
 ```toml
 # Actr.toml
 [package]
+name = "storage-service"
+
+[package.actr_type]
 manufacturer = "acme"
-type = "storage-service"
+name = "storage-service"
+
+[system.deployment]
 realm = "tenant-acme"  # 指定所属 Realm
 ```
 

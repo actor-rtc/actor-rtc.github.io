@@ -74,8 +74,11 @@ Actr 进程的类型标识符，由 `<manufacturer>` 和 `<name>` 两个部分�
 **配置位置**: `Actr.toml` 中的 `[package]` 部分：
 ```toml
 [package]
+name = "echo-service"
+
+[package.actr_type]
 manufacturer = "acme"
-type = "echo-service"  # 生成 ActrType: "acme:echo-service"
+name = "echo-service"  # 生成 ActrType: "acme:echo-service"
 ```
 
 ### ActrId
@@ -762,9 +765,13 @@ message EchoResponse {
 ```toml
 [package]
 name = "webrtc-echo-actor"
+
+[package.actr_type]
 manufacturer = "acme"
-type = "echo-service"
-realm = "default"
+name = "echo-service"
+
+[system.deployment]
+realm = 0
 
 exports = ["proto/echo.v1.proto"]
 

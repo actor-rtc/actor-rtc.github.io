@@ -70,8 +70,11 @@ graph TB
 
 ```toml
 [package]
+name = "echo-app"
+
+[package.actr_type]
 manufacturer = "acme"
-type = "echo-service"  # 最终生成 ActrType: "acme:echo-service"
+name = "echo-service"  # 最终生成 ActrType: "acme:echo-service"
 ```
 
 **用途**:
@@ -223,9 +226,10 @@ cd webrtc-echo-actor
 ```toml
 [package]
 name = "webrtc-echo-actor"
-manufacturer = "acme"
 # Actr 在网络中的服务类型，用于服务发现
-type = "echo-service"
+[package.actr_type]
+manufacturer = "acme"
+name = "echo-service"
 
 # 声明此 Actor 实现的 .proto 契约文件集合
 exports = ["proto/echo.v1.proto"]
