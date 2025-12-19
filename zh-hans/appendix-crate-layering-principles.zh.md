@@ -280,10 +280,13 @@ pub struct RpcEnvelope {
     #[prost(bytes = "bytes", tag = "2")]
     pub payload: Bytes,
 
-    #[prost(string, tag = "100")]
-    pub trace_id: String,
+    #[prost(string, optional, tag = "100")]
+    pub traceparent: Option<String>,
 
-    // ... 其他字段
+    #[prost(string, optional, tag = "101")]
+    pub tracestate: Option<String>,
+
+    // ... other fields
 }
 ```
 
@@ -574,7 +577,7 @@ Context (framework)
 pub struct Context {
     actor_id: ActrId,
     caller_id: Option<ActrId>,
-    trace_id: String,
+    // 追踪信息由 OpenTelemetry 框架管理
     request_id: String,
     // ...
 }

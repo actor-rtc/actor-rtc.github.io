@@ -138,7 +138,7 @@ realm = "tenant-acme"  # 指定所属 Realm
    ctx.schedule_tell(...);
    ```
 
-2. **请求上下文的载体**: 封装调用环境信息（caller_id, trace_id）
+2. **请求上下文的载体**: 封装调用环境信息（caller_id, request_id）
 
 3. **Actr 间通信的媒介**: 提供类型安全的 `tell` 和 `call` 方法
 
@@ -213,7 +213,8 @@ RPC 调用的消息容器类型，封装了 RPC 消息的完整元数据和 Payl
 **核心字段**:
 - `route_key`: 路由键（如 `"/echo.v1.EchoService/Echo"`）
 - `payload`: 序列化的 Request/Response（Bytes）
-- `trace_id`: 分布式追踪 ID
+- `traceparent`: W3C 追踪上下文头（trace_id、span_id 等）
+- `tracestate`: W3C 追踪状态头（多供应商追踪系统协作）
 - `request_id`: 请求 ID（用于响应匹配）
 - `metadata`: 元数据（键值对）
 - `timeout_ms`: 超时时间

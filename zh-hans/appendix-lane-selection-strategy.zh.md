@@ -278,10 +278,12 @@ impl Context {
         let lane = self.dest_transport.get_lane(payload_type).await?;
 
         // 2. 编码消息为 RpcEnvelope
+        // 注意：traceparent 和 tracestate 会通过 OpenTelemetry 自动注入
         let envelope = RpcEnvelope {
             route_key: route_key.to_string(),
             payload: request.encode_to_vec().into(),
-            trace_id: self.trace_id.clone(),
+            traceparent: None,  // 自动注入
+            tracestate: None,   // 自动注入
             request_id: Uuid::new_v4().to_string(),
             metadata: HashMap::new(),
         };

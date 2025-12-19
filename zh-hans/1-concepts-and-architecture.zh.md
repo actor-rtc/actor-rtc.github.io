@@ -236,7 +236,7 @@ realm = "tenant-acme"  # 指定所属 Realm
 
     1.  **副作用的桥梁**: Actr 不直接执行日志记录、网络通信或定时器等操作，而是通过 `context` 发出请求（例如 `context.logger.info(...)`, `context.schedule_tell(...)`）。这使得在测试中可以轻易地用一个模拟的 `Context` 来验证 Actr 的行为，而无需执行真实的 I/O。
 
-    2.  **请求上下文的载体**: `Context` 封装了每次方法调用的环境信息，如调用者身份 (`caller_id`) 和分布式追踪ID (`trace_id`)。这使得业务逻辑可以访问必要的环境信息，而无需污染方法签名。
+    2.  **请求上下文的载体**: `Context` 封装了每次方法调用的环境信息，如调用者身份 (`caller_id`) 和请求 ID (`request_id`)。分布式追踪信息由 OpenTelemetry 框架自动传播。
 
     3.  **Actr间通信的媒介**: `Context` 提供了类型安全的 `tell` (发送单向消息) 和 `call` (发送请求-响应消息) 方法，用于 Actr 之间的交互。它将 `.proto` 文件中定义的 `service` 契约，转化为符合 Actor 思想的、基于消息传递的 API，保证了通信的健壮性和类型安全。
 

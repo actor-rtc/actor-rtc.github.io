@@ -346,10 +346,10 @@ impl<W: Workload> ActrNode<W> {
     /// - 最终生成的代码接近手写的 match 表达式
     pub async fn handle_incoming(&self, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         // 创建 Context
+        // 注意：分布式追踪上下文通过 OpenTelemetry 自动传播
         let ctx = self.context_factory.create(
             self.actor_id.as_ref().unwrap(),
             envelope.caller_id.as_ref(),
-            &envelope.trace_id,
             &envelope.request_id,
         );
 
@@ -977,16 +977,15 @@ impl ContextFactory {
         &self,
         self_id: &ActrId,
         caller_id: Option<&ActrId>,
-        trace_id: &str,
         request_id: &str,
     ) -> Context {
         Context::new(
             self_id.clone(),
             caller_id.cloned(),
-            trace_id.to_string(),
             request_id.to_string(),
             self.gate.clone(),
         )
+        // 注意：分布式追踪由 OpenTelemetry 框架管理
     }
 
     /// 创建引导 Context（用于生命周期钩子）
