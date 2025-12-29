@@ -898,7 +898,7 @@ mod tests {
             },
         };
 
-        assert_eq!(id.to_string_repr(), "acme:echo@1234:1");
+        assert_eq!(id.to_string_repr(), "1234@1:acme+echo");
     }
 }
 

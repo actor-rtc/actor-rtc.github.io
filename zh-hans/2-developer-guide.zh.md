@@ -58,13 +58,13 @@ graph TB
 每个 ActrNode 都有一个**服务类型标识符** (`ActrType`)，格式为：
 
 ```
-<manufacturer>:<name>
+<manufacturer>+<name>
 ```
 
 **示例**:
-- `acme:echo-service` - ACME 公司的回声服务
-- `openai:chat-gpt` - OpenAI 的 ChatGPT 服务
-- `my-org:video-encoder` - 自定义的视频编码服务
+- `acme+echo-service` - ACME 公司的回声服务
+- `openai+chat-gpt` - OpenAI 的 ChatGPT 服务
+- `my-org+video-encoder` - 自定义的视频编码服务
 
 **配置位置**: 在 `Actr.toml` 中声明：
 
@@ -74,7 +74,7 @@ name = "echo-app"
 
 [package.actr_type]
 manufacturer = "acme"
-name = "echo-service"  # 最终生成 ActrType: "acme:echo-service"
+name = "echo-service"  # 最终生成 ActrType: "acme+echo-service"
 ```
 
 **用途**:
@@ -106,7 +106,7 @@ Fingerprint 是基于 `.proto` 文件内容计算的**语义哈希**，用于精
 
 ```bash
 $ actr install
-Found 3 versions for 'acme:storage-service':
+Found 3 versions for 'acme+storage-service':
 1. semantic:abc123 (2024-01-15) - v1.2.0
 2. semantic:def456 (2024-02-20) - v1.3.0
 3. semantic:ghi789 (2024-03-10) - v1.4.0
@@ -118,7 +118,7 @@ Select version: 2
 
 ```toml
 [[dependencies]]
-actr_type = "acme:storage-service"
+actr_type = "acme+storage-service"
 fingerprint = "semantic:def456"
 proto_files = ["storage.v1.proto"]
 ```
@@ -128,16 +128,16 @@ proto_files = ["storage.v1.proto"]
 当两个 ActrNode 建立连接时，框架会自动检查双方的服务契约是否兼容：
 
 ```
-ActrNode A 依赖 "acme:storage-service" (fingerprint: semantic:def456)
-ActrNode B 提供 "acme:storage-service" (fingerprint: semantic:def456)
+ActrNode A 依赖 "acme+storage-service" (fingerprint: semantic:def456)
+ActrNode B 提供 "acme+storage-service" (fingerprint: semantic:def456)
 ✅ Fingerprint 匹配，允许连接
 ```
 
 如果不匹配：
 
 ```
-ActrNode A 依赖 "acme:storage-service" (fingerprint: semantic:def456)
-ActrNode B 提供 "acme:storage-service" (fingerprint: semantic:ghi789)
+ActrNode A 依赖 "acme+storage-service" (fingerprint: semantic:def456)
+ActrNode B 提供 "acme+storage-service" (fingerprint: semantic:ghi789)
 ❌ Fingerprint 不匹配，拒绝连接（版本不兼容）
 ```
 
@@ -152,13 +152,14 @@ ActrNode B 提供 "acme:storage-service" (fingerprint: semantic:ghi789)
 除了 ActrType，每个**运行中**的 ActrNode 实例还有一个唯一的 `ActrId`，格式为：
 
 ```
-<manufacturer>:<name>:<serial_number>
+<serial_number (hex)>@<realm_id>:<manufacturer>+<name>
 ```
 
-**示例**: `acme:echo-service:550e8400-e29b-41d4-a716-446655440000`
+**示例**: `1a2b3c@1001:acme+echo-service`
 
-- `acme:echo-service` 是 ActrType（服务类型）
-- `550e8400-...` 是运行时生成的 UUID（实例编号）
+- `1a2b3c` 是 16 进制序列号
+- `1001` 是 Realm ID
+- `acme+echo-service` 是 ActrType（服务类型）
 
 **用途**:
 - **消息路由**: 框架通过 ActrId 路由消息到具体实例
@@ -169,9 +170,9 @@ ActrNode B 提供 "acme:storage-service" (fingerprint: semantic:ghi789)
 
 | 术语 | 作用域 | 用途 | 示例 |
 |------|--------|------|------|
-| **ActrType** | 服务类型级别 | 服务发现、权限控制 | `acme:echo-service` |
+| **ActrType** | 服务类型级别 | 服务发现、权限控制 | `acme+echo-service` |
 | **Fingerprint** | 服务版本级别 | 版本锁定、兼容性检查 | `semantic:abc123` |
-| **ActrId** | 运行时实例级别 | 消息路由、实例追踪 | `acme:echo-service:550e8400-...` |
+| **ActrId** | 运行时实例级别 | 消息路由、实例追踪 | `1a2b3c@1001:acme+echo-service` |
 
 #### **最佳实践**
 

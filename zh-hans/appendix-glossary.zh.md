@@ -64,7 +64,7 @@ ActrNode = ActrSystem + Workload
 ### ActrType
 Actr 进程的类型标识符，由 `<manufacturer>` 和 `<name>` 两个部分组成，用于唯一标识一个 Actr 的类型。
 
-**格式**: `<manufacturer>:<name>`（如 `acme:echo-service`）
+**格式**: `<manufacturer>+<name>`（如 `acme+echo-service`）
 
 **用途**:
 - 服务发现：其他 Actor 通过 ActrType 查找服务
@@ -78,19 +78,20 @@ name = "echo-service"
 
 [package.actr_type]
 manufacturer = "acme"
-name = "echo-service"  # 生成 ActrType: "acme:echo-service"
+name = "echo-service"  # 生成 ActrType: "acme+echo-service"
 ```
 
 ### ActrId
 Actr 进程的全局唯一标识符，用于标识运行时的具体实例。
 
-**格式**: `<manufacturer>:<name>:<serial_number>`
+**格式**: `<serial_number (hex)>@<realm_id>:<manufacturer>+<name>`
 
-**示例**: `acme:echo-service:550e8400-e29b-41d4-a716-446655440000`
+**示例**: `1a2b3c@1001:acme+echo-service`
 
 **组成部分**:
-- `<manufacturer>:<name>`: ActrType（服务类型）
-- `<serial_number>`: 运行时生成的 UUID（实例编号）
+- `<serial_number (hex)>`: 16 进制序列号
+- `<realm_id>`: Realm 标识符
+- `<manufacturer>+<name>`: ActrType（服务类型）
 
 **用途**:
 - 消息路由：框架通过 ActrId 路由消息到具体实例
@@ -101,8 +102,8 @@ Actr 进程的全局唯一标识符，用于标识运行时的具体实例。
 
 | 术语         | 作用域         | 用途               | 示例                             |
 | ------------ | -------------- | ------------------ | -------------------------------- |
-| **ActrType** | 服务类型级别   | 服务发现、权限控制 | `acme:echo-service`              |
-| **ActrId**   | 运行时实例级别 | 消息路由、实例追踪 | `acme:echo-service:550e8400-...` |
+| **ActrType** | 服务类型级别   | 服务发现、权限控制 | `acme+echo-service`              |
+| **ActrId**   | 运行时实例级别 | 消息路由、实例追踪 | `1a2b3c@1001:acme+echo-service` |
 
 ### Realm（领域）
 框架的多租户与安全隔离机制。每个 Actor 属于一个 `Realm`（通过 `realm_id` 标识），默认情况下，不同 `Realm` 之间的 Actor 完全隔离。
@@ -802,7 +803,7 @@ url = "ws://localhost:8081"
 **示例**:
 ```toml
 [[dependencies]]
-actr_type = "acme:storage-service"
+actr_type = "acme+storage-service"
 fingerprint = "semantic:def456"
 proto_files = ["storage.v1.proto"]
 ```
@@ -857,7 +858,7 @@ Actor-RTC 框架的命令行工具，提供项目管理、依赖安装、代码�
 **作用**: 控制哪些 Actr 可以调用本服务的特定方法
 
 **授权维度**:
-- 基于 `ActrType`（如 `acme:client-app`）
+- 基于 `ActrType`（如 `acme+client-app`）
 - 基于 `<manufacturer>`（如 `acme:*`）
 - 基于 `<realm_id>`（如 `tenant-acme`）
 
