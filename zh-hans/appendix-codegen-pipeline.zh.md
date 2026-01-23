@@ -62,7 +62,7 @@ cargo install --path actr/crates/framework-protoc-codegen --bin protoc-gen-actrf
 
 # 3) 在示例项目中重新生成
 cd examples/shell-actr-echo/server
-actr gen proto src/generated
+actr gen --input proto --output src/generated
 
 # 4) 构建与运行验证
 cargo build
@@ -91,7 +91,7 @@ mkdir proto
 vim proto/my_service.proto
 
 # 3) 生成代码
-actr gen proto src/generated
+actr gen --input proto --output src/generated
 
 # 4) 编写业务逻辑
 vim src/my_service.rs
@@ -110,13 +110,13 @@ cargo build
 ```bash
 # 错误示例：只改了源码就直接生成，仍会使用旧的二进制
 vim crates/framework-protoc-codegen/src/modern_generator.rs
-actr gen proto src/generated  # 仍在用旧版！
+actr gen --input proto --output src/generated  # 仍在用旧版！
 ```
 ```bash
 # 正确示例：先重新安装，再生成
 vim crates/framework-protoc-codegen/src/modern_generator.rs
 cargo install --path crates/framework-protoc-codegen --bin protoc-gen-actrframework
-actr gen proto src/generated
+actr gen --input proto --output src/generated
 ```
 
 ### 误区 3：手动调用 protoc
@@ -126,7 +126,7 @@ protoc --plugin=protoc-gen-actrframework=... --actrframework_out=...
 ```
 ```bash
 # 推荐：使用 actr gen 命令
-actr gen proto src/generated
+actr gen --input proto --output src/generated
 ```
 
 ## 验证方式
