@@ -309,14 +309,14 @@ pub struct EchoActor;
 // 这是 Actor 处理具体消息的地方
 #[async_trait]
 impl EchoServiceHandler for EchoActor {
-    async fn send_echo(&self, request: EchoRequest, _ctx: &Context) -> ActorResult<EchoResponse> {
+    async fn send_echo<C: Context>(&self, request: EchoRequest, _ctx: &C) -> ActorResult<EchoResponse> {
         println!("收到消息: '{}'", request.message.as_deref().unwrap_or_default());
         let reply = format!("回声: {}", request.message.as_deref().unwrap_or_default());
         Ok(EchoResponse { reply: Some(reply) })
     }
 }
 
-// 5. 通过 blanket impl 自动获得 MessageHandler<M> 和 Workload trait
+// 5. 通过代码生成器自动获得 MessageDispatcher 和 Workload wrapper
 // 代码生成器会自动提供这些实现，开发者无需手动编写
 // 这是实现零成本抽象和编译时路由的关键
 
