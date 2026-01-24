@@ -1,16 +1,65 @@
 # Actr WebRTC 配置指南
 
-Actr 提供三种 WebRTC 策略：`no_config`（默认）、`ephemeral_ports`（推荐）、`muxed_port`（复用）。
+Actr 的 WebRTC 配置非常灵活：通常情况下只需配置 STUN/TURN 服务器即可；如果作为服务端部署在 NAT 后需要提高直连率，则需额外配置 UDP 端口范围。
 
 > **术语**：`host`（内网直连）、`srflx`（公网映射）、`relay`（TURN 中继）
 
 ---
 
-## 1. 策略模式说明 (Strategy Overview)
+## 1. 配置说明 (Configuration Overview)
 
-### 1.1 No Config (默认模式)
+**不配置端口范围**。系统随机分配端口，开箱即用。适合作为**主动发起连接的一方**（如手机、电脑客户端），或者在公网（有独立ip 非nat后的服务）直接运行的程序。
 
-这是**最简单**的模式，适用于**无需固定端口** 由系统随机分配端口的场景。
+
+> **注意**：当通信双方 (**ActrA** 与 **ActrB**) **都未配置端口范围**（随机端口）时，**直连**连通性如下表所示：
+>
+> | A \ B 环境 | **公网** (Public) | **锥型 NAT** (普通) | **对称型 NAT** (4G/企业) |
+> | :--- | :--- | :--- | :--- |
+> | **公网** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+> | **锥型 NAT** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+> | **对称型 NAT** | ✅ **直连** | ✅ **直连** | ❗ **中继** |
+>
+> *   **中继**：指无法建立 P2P 直连，**必须依赖 TURN 中继**才能通信。
+
+<details open>
+<summary><b>图解：为什么双端对称型 NAT 无法直连？</b></summary>
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Actr A
+    participant NA as NAT A (对称)
+    participant S as STUN
+    participant NB as NAT B (对称)
+    participant B as Actr B
+
+    Note over A, B: 双方都位于对称型 NAT 后
+
+    rect rgb(240, 248, 255)
+    Note right of A: 1. 探测公网地址
+    A->>NA: 请求 STUN
+    NA->>S: 映射公网端口 1001 (Target: STUN)
+    S-->>A: 返回公网地址: 1001
+    
+    B->>NB: 请求 STUN
+    NB->>S: 映射公网端口 2001 (Target: STUN)
+    S-->>B: 返回公网地址: 2001
+    end
+
+    Note over A, B: 2. 交换 SDP: A(1001) <---> B(2001)
+
+    rect rgb(255, 235, 235)
+    Note right of A: 3. 尝试直连 (失败)
+    A->>NA: 发送给 B (Target: 2001)
+    NA->>NB: 映射新端口 1002 (❌ 端口变动)<br/>对称 NAT: 目标变了，分配新端口
+    Note right of NB: 收到来自 1002 的包<br/>但只预期 1001 (或只允许 STUN IP)<br/>⛔️ 丢弃
+    
+    B->>NB: 发送给 A (Target: 1001)
+    NB->>NA: 映射新端口 2002 (❌ 端口变动)<br/>对称 NAT: 目标变了，分配新端口
+    Note left of NA: 收到来自 2002 的包<br/>但只预期 2001 (或只允许 STUN IP)<br/>⛔️ 丢弃
+    end
+```
+</details>
 
 *   **配置示例**：
     ```toml
@@ -26,29 +75,56 @@ Actr 提供三种 WebRTC 策略：`no_config`（默认）、`ephemeral_ports`（
 *   **优点**：
     *   只需要基础配置即可
 *   **缺点**：
-    *   可能无法直连，通常需要依赖中继服务。
+    *   **无法做端口映射**：因端口随机，无法在路由器/宿主机配置静态映射，导致在 NAT 或容器内无法作为服务端被直连。
+    *   **双端对称 NAT 不通**：如上表所示，若双方都处于 **对称型 NAT** (如双端 4G) 环境下，直连必然失败。
 *   **适用场景**：
     *   移动端 App。
     *   桌面客户端。
     *   浏览器
 
-### 1.2 Ephemeral Ports (临时端口段模式)
+### 1.2 指定端口范围 (With Port Range)
 
-这是 WebRTC 的**标准工作模式**，也是**连接质量最好**的模式。
+**服务端部署推荐配置**。通过配置固定的 UDP 端口范围配合公网映射，严格遵循 ICE 协议标准，完美解决了服务端在 NAT 后的直连难题。这是目前**兼容性最好、穿透成功率最高**的配置方案。
+
+> **效果分析**：通过**固定端口映射**，能显著提升连通性。
+>
+> **情况一：混合场景**
+> 假设 **ActrA (无固定端口)** 连接 **ActrB (有固定端口映射)**。
+> 此时 ActrB 等同于公网节点，ActrA 能够主动建立连接：
+>
+> | A(随机端口) \ B(固定端口) | **公网** | **锥型 NAT** | **对称型 NAT** |
+> | :--- | :--- | :--- | :--- |
+> | **公网** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+> | **锥型 NAT** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+> | **对称型 NAT** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+>
+> *   **核心优势**：只要**服务端**配置了端口范围并做好了映射，即可解决客户端处于对称 NAT 或复杂网络环境下的直连难题。
+>
+> **情况二：双端固定端口**
+> 假设 **ActrA** 与 **ActrB** **都有固定端口映射**，此时双方连通性**等同于公网互连**：
+>
+> | A \ B 环境 (固定端口) | **公网** | **锥型 NAT** | **对称型 NAT** |
+> | :--- | :--- | :--- | :--- |
+> | **公网** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+> | **锥型 NAT** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+> | **对称型 NAT** | ✅ **直连** | ✅ **直连** | ✅ **直连** |
+>
+> *   **结论**：这是**最完美**的配置方案。只要映射正确，无论双方处于何种网络环境（包括双端对称 NAT），均可实现**直连**。
 
 *   **配置示例**：
     ```toml
-    [system.webrtc.ephemeral_ports]
-    udp_ports = "50000-50100"
+    [system.webrtc]
+    port_range_start = 50000
+    port_range_end = 50100
     public_ips = ["203.0.113.10"] # NAT后必填
     
-    [system.webrtc]
     turn_urls = ["turn:turn.example.com:3478"]
     stun_urls = ["stun:stun.example.com:3478"]
     ice_relay_acceptance_min_wait = 2000 # 服务端直连优先
     ```
 *   **参数说明**：
-    *   `udp_ports`: (必填) 指定 Actr 可用于分配的 UDP 端口范围，格式为 `"MIN-MAX"`。范围大小建议至少 100 个。
+    *   `port_range_start`: (必填) 端口范围起始值。
+    *   `port_range_end`: (必填) 端口范围结束值。建议范围大小至少 100 个。
     *   `public_ips`: (可选) 如果服务器在 NAT 后，必须填入公网 IP，格式 `["PUBLIC"]`。如果服务器直接拥有公网 IP，可不填。
 *   **原理**：
     Actr 为每个客户端连接分配一个**独立**的 UDP 端口（从配置范围中选择）。
@@ -61,45 +137,17 @@ Actr 提供三种 WebRTC 策略：`no_config`（默认）、`ephemeral_ports`（
     *   拥有公网 IP 的服务端。
     *   可以配置 NAT 端口段映射的网关。
 
-### 1.3 Muxed Port (单端口复用模式)
 
-这是为了应对**严格防火墙**环境而设计的特殊模式。
-
-*   **配置示例**：
-    ```toml
-    [system.webrtc.muxed_port]
-    udp_port = "50000"
-    public_ips = ["203.0.113.10"] 
-    
-    [system.webrtc]
-    turn_urls = ["turn:turn.example.com:3478"] 
-    ice_relay_acceptance_min_wait = 100
-    ```
-*   **参数说明**：
-    *   `udp_port`: (必填) 指定唯一的 UDP 端口号，格式为字符串 `"PORT"`。
-    *   `public_ips`: (可选) 单端口模式不支持 STUN，因此**强烈建议**配置此项以直接告知对方公网地址。如不配置，流量将完全通过 TURN 中继。
-*   **原理**：
-    所有客户端连接**共用同一个** UDP 端口。
-*   **优点**：
-    *   **端口管理简单**：只需在防火墙开放 1 个端口。
-*   **缺点**：
-    *   **不支持 STUN**：无法自动探测公网 IP（必须手动配置 `public_ips` 或走中继）。
-    *   **内网通信可能绕路**：由于通常只配置公网 IP 且不支持 STUN，局域网内的设备可能被迫经过外网接口或中继进行通信。
-*   **适用场景**：
-    *   严格限制开放端口的企业内网。
-    *   Docker/K8s 容器环境（减少端口映射数量）。
 
 ---
 
 ## 2. 快速选择 (Quick Select)
 
-| 你的场景                     | 推荐策略          | 关键配置                     |
-| ---------------------------- | ----------------- | ---------------------------- |
-| **移动端 / 客户端**          | `no_config`       | 无需配置                     |
-| **服务端（有公网 IP）**      | `ephemeral_ports` | 端口段 + STUN/TURN           |
-| **服务端（NAT 后）**         | `ephemeral_ports` | 端口段 + `public_ips` + TURN |
-| **严格防火墙（单端口）**     | `muxed_port`      | 单端口 + TURN                |
-| **严格防火墙+NAT（单端口）** | `muxed_port`      | 单端口 + `public_ips` + TURN |
+| 你的场景                | 关键配置                     |
+| ----------------------- | ---------------------------- |
+| **移动端 / 客户端**     | STUN/TURN (不配端口)         |
+| **服务端（有公网 IP）** | 端口段 + STUN/TURN           |
+| **服务端（NAT 后）**    | 端口段 + `public_ips` + TURN |
 
 ---
 
@@ -109,7 +157,7 @@ Actr 提供三种 WebRTC 策略：`no_config`（默认）、`ephemeral_ports`（
 
 ### 场景 A：移动端 / 客户端
 
-无需配置特定的端口策略，但**建议配置** STUN/TURN 以确保连通性。
+无需配置特定的端口，但**建议配置** STUN/TURN 以确保连通性。
 
 ```toml
 [system.webrtc]
@@ -125,10 +173,10 @@ ice_relay_acceptance_min_wait = 100         # 客户端推荐速度优先
 机器直接拥有公网 IP，无 NAT。
 
 ```toml
-[system.webrtc.ephemeral_ports]
-udp_ports = "50000-50100"
-
 [system.webrtc]
+port_range_start = 50000
+port_range_end = 50100
+
 stun_urls = ["stun:stun.example.com:3478"]  # 帮助对方发现公网 IP
 turn_urls = ["turn:turn.example.com:3478"]
 ice_relay_acceptance_min_wait = 2000        # 直连优先
@@ -141,11 +189,11 @@ ice_relay_acceptance_min_wait = 2000        # 直连优先
 机器使用内网 IP，通过路由器的公网 IP 访问。
 
 ```toml
-[system.webrtc.ephemeral_ports]
-udp_ports = "50000-50100"
+[system.webrtc]
+port_range_start = 50000
+port_range_end = 50100
 public_ips = ["203.0.113.10"]  # 必须配置：["公网IP"]
 
-[system.webrtc]
 stun_urls = ["stun:stun.example.com:3478"]
 turn_urls = ["turn:turn.example.com:3478"]  # TURN 兜底
 ice_relay_acceptance_min_wait = 2000        # 直连优先
@@ -155,20 +203,7 @@ ice_relay_acceptance_min_wait = 2000        # 直连优先
 
 ---
 
-### 场景 D：严格防火墙（只能单端口）
 
-只能开放单个 UDP 端口，无法开放端口段。
-
-```toml
-[system.webrtc.muxed_port]
-udp_port = "50000"
-# 如果在 NAT 后，取消注释下行并配置 IP：
-# public_ips = ["203.0.113.10/192.168.1.10"]
-
-[system.webrtc]
-turn_urls = ["turn:turn.example.com:3478"]  # 必须配置 TURN
-ice_relay_acceptance_min_wait = 100         # 速度优先
-```
 
 ---
 
@@ -177,12 +212,10 @@ ice_relay_acceptance_min_wait = 100         # 速度优先
 ### Q: NAT 后配置了 `public_ips` 还需要 STUN 吗？
 **不需要，也不能要**。`public_ips` 显式指定了公网 IP，STUN 会产生冲突（webrtc-rs 限制）。
 
-### Q: 为什么 `muxed_port` 必须配置 TURN？
-因为单端口复用模式不支持 STUN，无法自动发现公网地址。如果没有 TURN，一旦直连失败就无法通信。
 
 ### Q: ICE 等待时间怎么设？
 - **直连优先**（服务端）：`2000` ms。等待更长时间以建立直连，节省 TURN 流量。
-- **速度优先**（客户端/单端口）：`100` ms。快速建立连接，不惜使用 TURN。
+- **速度优先**（客户端）：`100` ms。快速建立连接，不惜使用 TURN。
 
 ### Q: 怎么验证配置是否成功？
 1. **检查 IP**：`curl ifconfig.me`（公网）和 `ip addr`（内网）确保填写的 IP 正确。
@@ -202,6 +235,5 @@ ice_relay_acceptance_min_wait = 100         # 速度优先
 
 ## 总结
 
-- 能用 **场景 B/C** (`ephemeral_ports`) 就尽量用，效果最好。
-- 实在受限再用 **场景 D** (`muxed_port`)。
-- 移动端直接用 **场景 A**。
+- 服务端部署**强烈建议**配置端口范围 (`port_range_start/end`)。
+- 移动端/客户端一般**无需配置**端口。
