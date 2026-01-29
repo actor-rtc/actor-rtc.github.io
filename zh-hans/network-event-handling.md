@@ -100,6 +100,9 @@ pub trait NetworkEventProcessor: Send + Sync {
         is_wifi: bool,
         is_cellular: bool,
     ) -> Result<(), String>;
+
+    /// 主动清理所有连接（不依赖网络事件）
+    async fn cleanup_connections(&self) -> Result<(), String>;
 }
 ```
 
@@ -127,6 +130,25 @@ pub trait NetworkEventProcessor: Send + Sync {
 1. 作为网络丢失处理
 2. 等待网络稳定（500ms）
 3. 作为网络恢复处理
+
+#### 手动清理连接（Manual Cleanup）
+主动调用 `cleanup_connections()` 时执行完整的资源清理：
+1. **清理状态**：清除所有待处理的 ICE 重启尝试
+2. **关闭连接**：关闭所有 WebRTC Peer Connections（不可逆操作）
+3. **断开信令**：主动断开 WebSocket 连接
+
+### 6. 事件防抖机制 (Event Debouncing)
+
+为了防止底层网络接口频繁抖动导致重复触发事件（例如 4G/WiFi 频繁切换），系统在 `NetworkEventProcessor` 层面内置了防抖机制。
+
+**防抖规则**：
+- **同类型事件**：如果当前事件与上一次同类型事件的时间间隔小于防抖窗口，则忽略该事件（视为抖动）。
+- **跨类型事件**：如果事件类型发生变化（例如从 `Lost` 变为 `Available`），则**立即处理**，忽略防抖窗口。这确保了网络状态变化的响应性。
+- **强制执行**：`cleanup_connections()` 不受防抖逻辑影响，总是立即执行。
+
+**配置防抖时间**：
+在创建 `NetworkEventHandle` 时通过 `debounce_ms` 参数配置防抖窗口大小（默认建议 2000ms）。
+
 
 ### 5. NetworkEventHandle（事件句柄）
 
@@ -164,7 +186,9 @@ let system = ActrSystem::new(config).await?;
 
 ```rust
 // 只在需要网络事件处理时才创建
-let network_handle = system.create_network_event_handle();
+// 参数：防抖窗口时间（毫秒）。如果为 0，则使用默认值。
+let debounce_ms = 2000;
+let network_handle = system.create_network_event_handle(debounce_ms);
 ```
 
 **注意**：
@@ -278,6 +302,12 @@ impl NetworkEventProcessor for CustomNetworkEventProcessor {
         // ...
         Ok(())
     }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        self.metrics.record_cleanup_connections();
+        // 自定义清理逻辑...
+        Ok(())
+    }
 }
 ```
 
@@ -306,13 +336,20 @@ impl ActrSystem {
         })
     }
     
-    pub fn create_network_event_handle(&self) -> NetworkEventHandle {
+    pub fn create_network_event_handle(
+        &self,
+        debounce_ms: u64,
+    ) -> NetworkEventHandle {
         // 延迟创建 channels
         let (event_tx, event_rx) = mpsc::channel(100);
         let (result_tx, result_rx) = mpsc::channel(100);
         
+        // 构造防抖配置（如果 debounce_ms > 0）
+        let debounce_config = ...;
+
         // 存储 channels（供 attach 使用）
-        *self.network_event_channels.lock().unwrap() = Some((event_rx, result_tx));
+        *self.network_event_channels.lock().unwrap() = 
+            Some((event_rx, result_tx, debounce_config));
         
         // 返回 handle
         NetworkEventHandle::new(event_tx, result_rx)
@@ -492,7 +529,8 @@ async fn test_network_event_handle() {
 async fn test_network_recovery_flow() {
     let config = Config::default();
     let system = ActrSystem::new(config).await.unwrap();
-    let network_handle = system.create_network_event_handle();
+    // 使用默认防抖时间
+    let network_handle = system.create_network_event_handle(0);
     
     let workload = TestWorkload::new();
     let node = system.attach(workload);
