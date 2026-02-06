@@ -1,232 +1,215 @@
-# Transient 错误重发机制设计(待确认)
+# Transient 错误自动重试设计(待确认)
 
-> **文档版本**: v2.1  
-> **状态**: 设计阶段  
-> **最后更新**: 2026-02-05
-
----
-
-## 目录
-
-1. [问题场景](#1-问题场景)
-2. [当前框架的实现空白](#2-当前框架的实现空白)
-3. [解决方案](#3-解决方案)
-4. [实现方案](#4-实现方案)
-5. [实施计划](#5-实施计划)
-- [附录 A: 代码实现](#附录-a-代码实现)
-- [附录 B: 测试用例](#附录-b-测试用例)
+> **版本**: v1.0 | **状态**: 方案评审 | **更新**: 2026-02-06
+>
+> **待决策**：接收端去重方案（[方案一](#方案一业务层自行去重) vs [方案二](#方案二框架内置去重)）
 
 ---
 
-## 1. 问题场景
+## 1. 问题
 
-### 1.1 高频故障场景
-
-**场景一：移动网络切换**
-
-用户从 WiFi 区域走到室外，手机切换到 4G 网络，原连接断开。此时正在发送的请求失败，错误抛给调用方，但后台已自动重连成功。
-
-**场景二：断网重连**
-
-网络短暂中断（如信号波动、路由器重启），连接断开。用户发送请求时失败，错误抛给调用方，但后台正在自动重连。
-
-### 1.2 核心问题
+网络短暂中断时（WiFi→4G 切换、信号波动），框架能自动重连，但**正在发送的请求已经丢了**：
 
 ```
-发送请求 → 连接刚好断开 → 错误抛给调用方 → 后台自动重连成功
-                                ↑
-                            问题在这里
+调用方发送请求 → 网络断开 → 请求失败，错误抛给调用方
+                                       ↑
+                  与此同时，后台已自动重连成功 ← 但请求已经失败了
 ```
 
-框架自动重连成功了，但请求已经失败，调用方需要自己重试。
+根因很简单：**框架只做了"自动重连"，没做"自动重发"**。
+
+| 能力 | 现状 |
+|------|------|
+| 断线重连 | ✅ 已实现（WirePool 自动重连） |
+| 失败重发 | ❌ 未实现（错误直接抛给调用方） |
 
 ---
 
-## 2. 当前框架的实现空白
+## 2. 解决方案：发送端自动重试
 
-### 2.1 处理现状
+思路：遇到 Transient 错误时，框架自动在发送端重试。发送端无需改动；
+### 哪些方法需要重试（⏳ 待确认）
 
-| 机制 | 状态 | 说明 |
-|------|------|------|
-| **网络重连** | ✅ 已实现 | WirePool 自动重连 |
-| **数据重发** | ❌ 未实现 | 错误直接抛给上层 |
+| 方法 | 加入重试 | 说明 |
+|------|---------|------|
+| `send_request()` | ✅ 计划加入 | RPC 请求，Transient 错误时自动重发 |
+| `send_message()` | ✅ 计划加入 | 单向消息，Transient 错误时自动重发 |
+| `send_data_stream()` | ❌ 不加入 | Fast Path 低延迟通道，重试与其设计冲突 |
+| `send_media_sample()` | ❌ 不加入 | RTP 协议自身处理重传 |
 
-**问题**：自动重连 + 不自动重发 = 处理不对称
+### 什么是 Transient 错误
 
-### 2.2 受影响的方法
+只有**网络瞬断类**错误才重试，其他错误重试也没用，直接返回。
 
-| 方法 | 需要自动重发 |
-|------|-------------|
-| `send_request()` | ✅ 需要 |
-| `send_message()` | ✅ 需要 |
-| `send_data_stream(Reliable)` | ✅ 需要 |
-| `send_data_stream(LatencyFirst)` | ❌ 不需要 |
-| `send_media_sample()` | ❌ 不需要 |
+| 可重试（Transient） | 不重试 |
+|-------|--------|
+| `TransportError` — 连接断开、写入失败 | `Timeout` — 已超时，重试无意义 |
+| `ConnectionReset` — 对端重置连接 | `SerializationError` — 数据格式错误 |
+| `ChannelClosed` — WebSocket/DataChannel 意外关闭 | `ActorNotFound` — 目标不存在 |
+| | `PermissionDenied` — 权限不足 |
 
----
+### 重试策略
 
-## 3. 解决方案
+采用**指数退避 + 随机抖动**，在 deadline 内最多重试 3 次：
 
-**在 Outbound 层加入重试逻辑**，对上层透明。
+- 每次重试间隔翻倍（1s → 2s → 4s），叠加随机抖动避免同时重试
+- 所有重试必须在原始 timeout 内完成（deadline 模式）
+- 每个请求独立重试，互不影响
+- 重试时保持相同的 `request_id`，方便接收端识别重复
 
 ```
-改进前：调用方 → OutGate → 失败 → 返回错误 → 调用方自己重试
-改进后：调用方 → OutGate → 失败 → OutGate 自动重试 → 成功/最终失败
+例：timeout = 30s
+
+第 1 次发送 → 失败 (TransportError)
+  等 ~1s
+第 2 次发送 → 失败 (TransportError)
+  等 ~2s
+第 3 次发送 → 成功 ✅（总耗时 ~3s）
+
+失败场景：
+  3 次都失败 → 返回最后一次错误
+  deadline 先到 → 返回 Timeout
 ```
 
 ---
 
-## 4. 实现方案
+## 3. 重试带来的新问题
 
-### 4.1 需要解决的问题
+自动重试解决了丢消息的问题，但同时引入了一系列新问题：
 
-| 问题 | 解决方案 |
-|------|---------|
-| **Dest 隔离** | 每个请求独立的重试状态，不共享 |
-| **超时控制** | 使用 deadline 模式，重试不超过 RPC timeout |
-| **幂等性** | 发送端：相同 request_id；接收端：去重缓存 |
-| **资源保护** | 指数退避 + 抖动 |
+| 问题 | 说明 | 如何解决 |
+|------|------|---------|
+| **消息重复** | 发送端以为失败了重试，但第 1 次其实到达了接收端 → 接收端收到两次 | 接收端去重（见 [§4](#4-接收端去重方案待决策)） |
+| **重试风暴** | 大量客户端同时遇到网络抖动，集体重试 → 瞬间流量翻倍，压垮服务端 | 指数退避 + 随机抖动，打散重试时间点 |
+| **延迟放大** | 重试需要等待退避间隔，调用方感知到的延迟增大 | deadline 模式：所有重试必须在原始 timeout 内完成，不额外延长等待 |
+| **级联故障** | 下游服务已过载，重试进一步加剧负载 → 雪崩 | 最多 3 次重试 + deadline 兜底；后续可扩展熔断机制（Circuit Breaker） |
 
-### 4.2 Dest 隔离
+其中**消息重复**是需要在框架层面决策的核心问题，下面详细展开。
 
-每个请求有独立的 Backoff 实例，重试不影响其他请求。
-
-```
-请求 1 (→ Dest A): 重试中...
-请求 2 (→ Dest B): 正常发送 ✅  ← 不受影响
-请求 3 (→ Dest A): 正常发送 ✅  ← 不受影响
-```
-
-### 4.3 超时控制
-
-所有重试必须在 deadline 前完成。
+### 消息重复的典型场景
 
 ```
-timeout_ms = 30000
-deadline = now() + 30s
-
-重试 1: 失败，等待 500ms  (剩余 29.5s)
-重试 2: 失败，等待 1s    (剩余 28.5s)
-重试 3: 成功 ✅
-   或: deadline 到达 → 返回超时错误
+发送端                        接收端
+  │── 请求 (id=abc) ──────────→│  ← 第 1 次：接收端正常处理
+  │                   ←─ 响应 ──│
+  │         ✗ 响应丢失          │
+  │                             │
+  │   （以为失败了，重试）        │
+  │── 请求 (id=abc) ──────────→│  ← 第 2 次：同一条消息，又来了
 ```
 
-### 4.4 幂等性
+**需要决策：由谁来处理去重？** 下面给出两个方案。
 
-所有需要重发的方法都需要幂等保证：
+---
 
-| 方法 | 去重键 | 幂等策略 |
-|------|--------|---------|
-| `send_request()` | request_id | 缓存响应，重复请求返回缓存 |
-| `send_message()` | request_id | 记录 ID，重复消息忽略 |
-| `send_data_stream()` | `chunk_id` (metadata) | 记录 ID，重复数据块忽略 |
+## 4. 接收端去重方案（⏳ 待决策）
 
-**发送端**：重试时自动注入/保持相同的标识符
+### 方案一：业务层自行去重
 
-**接收端**：基于标识符去重，去重后移除内部标识（对应用层透明）
+框架只保证重试时 `request_id` 不变，**去重逻辑由业务 handler 自己实现**。
 
-```
-RPC 请求：
-  收到 request_id="abc" → 检查缓存
-    ├─ 未见过 → 处理请求，缓存结果
-    └─ 见过   → 直接返回缓存的响应
-
-单向消息：
-  收到 request_id="def" → 检查去重表
-    ├─ 未见过 → 处理消息，记录 ID
-    └─ 见过   → 忽略（已处理过）
-
-数据流：
-  收到 metadata.chunk_id="uuid-xxx" → 检查去重表
-    ├─ 未见过 → 记录 ID，移除 chunk_id，分发数据
-    └─ 见过   → 忽略（重复）
-```
-
-#### 4.4.1 去重存储接口
-
-去重存储抽象为 `DedupStore` 接口，支持灵活替换：
+- **优势**：框架零侵入、无额外内存开销、业务层完全掌控去重粒度
+- **劣势**：每个 handler 都可能需要自己写去重逻辑
+- **适合**：天然幂等的业务（读操作、覆盖写入）、已有去重机制（如 DB 唯一约束）
+- **框架改动**：无
 
 ```rust
-#[async_trait]
-pub trait DedupStore: Send + Sync {
-    async fn contains(&self, key: &str) -> bool;
-    async fn mark(&self, key: &str);
-    async fn get_response(&self, key: &str) -> Option<Bytes>;
-    async fn put_response(&self, key: &str, value: Bytes);
-    async fn try_mark_inflight(&self, key: &str) -> bool;
-    async fn clear_inflight(&self, key: &str);
+// 示例：利用 DB 唯一约束去重
+async fn handle_transfer(&mut self, req: TransferRequest, ctx: &impl Context) -> ActorResult<Bytes> {
+    match self.db.insert_transfer(&req.transfer_id, &req).await {
+        Ok(_) => { /* 首次请求，正常处理 */ }
+        Err(DbError::DuplicateKey) => {
+            // 重复请求，直接返回之前的结果
+            return self.db.get_transfer_result(&req.transfer_id).await;
+        }
+    }
+    // ...
 }
 ```
 
-| 方法 | 说明 |
-|------|------|
-| `contains` | 检查 key 是否已处理（消息/数据流去重） |
-| `mark` | 标记 key 已处理 |
-| `get_response` | 获取缓存的 RPC 响应 |
-| `put_response` | 缓存 RPC 响应 |
-| `try_mark_inflight` | 标记请求"处理中"，返回 true 表示成功，false 表示已有相同请求在处理 |
-| `clear_inflight` | 清除"处理中"标记（handler 完成或失败时调用） |
+### 方案二：框架内置去重
 
-| 实现 | 适用场景 | 说明 |
-|------|---------|------|
-| `LruDedupStore`（默认） | 小并发量 | 快速去重，高 QPS 时可能漏判 |
-| `RedisDedupStore` | 分布式/高并发 | 持久化，支持跨进程共享 |
-| 业务层 DB 约束 | 金融/交易场景 | 最可靠，由业务层自行保证 |
+> 参考：[Proto.Actor DeduplicationContext](https://github.com/asynkron/protoactor-go/blob/dev/actor/deduplication_context.go)
 
-### 4.5 重试参数（内置默认值）
+框架在 handler 执行前自动拦截重复消息，**业务层完全无感知**。
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| max_attempts | 3 | 最大重试次数 |
-| initial_delay | 1000ms | 初始退避时间 |
-| max_delay | 5000ms | 最大退避时间 |
-| multiplier | 2.0 | 退避倍数 |
-| jitter_factor | 0.2 | 抖动范围 ±20% |
+- **优势**：业务层零改动、零锁（利用 Actor 串行处理）、无并发竞态
+- **劣势**：重复消息仍会进入 Mailbox（去重在出队后执行）、额外内存开销
+- **适合**：大部分常规业务、开发者不想关心去重
+- **框架改动**：新增 `DedupState` + 改造 `handle_incoming`
+
+去重流程：
+
+```mermaid
+flowchart TD
+    A["收到消息\n(request_id)"] --> B{"DedupState\n见过这个 ID？"}
+
+    B -- "没见过" --> C["标记为已见"]
+    C --> D["执行 handler"]
+    D --> E{"是 RPC？"}
+    E -- "是" --> F["缓存响应"]
+    E -- "否" --> G(("完成"))
+    F --> G
+
+    B -- "见过 + 有缓存响应" --> H["返回缓存响应\n不执行 handler"]
+    B -- "见过 + 无缓存" --> I["忽略\n（重复的单向消息）"]
+    H --> G
+    I --> G
+
+    style B fill:#fff3cd,stroke:#ffc107
+    style D fill:#d1ecf1,stroke:#17a2b8
+    style H fill:#d4edda,stroke:#28a745
+    style I fill:#d4edda,stroke:#28a745
+```
+
+关键设计点：
+
+- `DedupState` 是 ActrNode 的普通字段（`HashMap`），不需要 `Mutex`
+- Actor 的 `handle_incoming` 在 Mailbox 出队循环中串行调用，天然无竞态
+- 检查 + 标记在同一步完成，没有 TOCTOU 窗口
+- 过期条目惰性清理（每次检查时顺带清理）
+
+### 方案对比
+
+| | 方案一：业务层去重 | 方案二：框架内置去重 |
+|------|------------------|-------------------|
+| **思路** | 框架保证 `request_id` 不变，业务自行去重 | 框架自动拦截重复消息 |
+| **优势** | 零侵入、无额外开销 | 业务零感知、零锁 |
+| **劣势** | 每个 handler 可能要写去重 | 重复消息仍进入 Mailbox |
+| **框架改动** | 无 | 新增 `DedupState` + 改造 `handle_incoming` |
+| **适合** | 天然幂等业务 | 大部分常规业务 |
 
 ---
 
 ## 5. 实施计划
 
-### Phase 1: 发送端重试 ⭐ 优先
+### Phase 1：发送端重试
 
-**目标**：所有可靠发送方法支持自动重试
+| 任务 | 说明 |
+|------|------|
+| 实现 `ExponentialBackoff` | 指数退避 + 随机抖动 |
+| 实现 `retry_with_backoff()` | 通用重试函数，遵守 deadline |
+| 改造 `send_request()` | 加入重试逻辑 |
+| 改造 `send_message()` | 加入重试逻辑 |
 
-**任务**：
-1. 实现通用 `retry_with_backoff()` 函数
-2. 实现带抖动的 `ExponentialBackoff`
-3. `send_request()` / `send_message()` / `send_data_stream(Reliable)` 添加重试
-4. 添加 `PayloadType::requires_reliable_send()`
+### Phase 2：接收端去重（⏳ 取决于方案决策）
 
-**产出**：可靠发送在 Transient 错误时自动重试
-
-### Phase 2: 接收端幂等处理
-
-**目标**：保证重复消息不会被重复处理
-
-**任务**：
-1. 定义 `DedupStore` 去重接口
-2. 实现默认的 `LruDedupStore`（LRU + TTL）
-3. 在 `WebRtcGate` 中集成去重（支持注入自定义实现）
-4. 在 `DataStreamRegistry` 中集成去重（基于 `chunk_id`，去重后移除）
-
-**产出**：
-- 接收端能正确处理重复的请求，对应用层透明
-- 支持按需替换去重存储（Redis/DB）以应对高并发场景
+| 决策 | 后续工作 |
+|------|---------|
+| 选方案一 | 无需框架改动，补充文档说明即可 |
+| 选方案二 | 实现 `DedupState` 并集成到 `ActrNode.handle_incoming()` |
 
 ---
 
-## 附录 A: 代码实现
+## 附录 A：发送端参考代码
 
-### A.1 Phase 1 代码
-
-#### A.1.1 重试常量
+### A.1 重试常量
 
 ```rust
 // outbound/retry.rs
 
 use std::time::Duration;
 
-// 重试默认配置（内置，不暴露）
 const MAX_ATTEMPTS: u32 = 3;
 const INITIAL_DELAY: Duration = Duration::from_millis(1000);
 const MAX_DELAY: Duration = Duration::from_secs(5);
@@ -235,7 +218,7 @@ const JITTER_FACTOR: f64 = 0.2;
 const MESSAGE_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 ```
 
-#### A.1.2 带抖动的指数退避
+### A.2 指数退避
 
 ```rust
 // outbound/backoff.rs
@@ -263,51 +246,41 @@ impl ExponentialBackoff {
             max_retries: MAX_ATTEMPTS,
         }
     }
-    
+
     pub fn next_delay(&mut self) -> Option<Duration> {
         if self.retries >= self.max_retries {
             return None;
         }
-        
-        // 添加抖动
+
         let base_ms = self.current.as_millis() as f64;
         let jitter = rand::thread_rng()
             .gen_range(-self.jitter_factor..self.jitter_factor);
         let delay_ms = (base_ms * (1.0 + jitter)).max(0.0) as u64;
         let delay = Duration::from_millis(delay_ms);
-        
-        // 计算下次延迟
+
         let next_ms = (base_ms * self.multiplier) as u64;
         self.current = Duration::from_millis(next_ms).min(self.max);
-        
+
         self.retries += 1;
         Some(delay)
-    }
-    
-    pub fn retry_count(&self) -> u32 {
-        self.retries
     }
 }
 ```
 
-#### A.1.3 通用重试函数
+### A.3 通用重试函数
 
 ```rust
 // outbound/retry.rs
 
 use std::future::Future;
-use std::time::Duration;
-use tokio::time;
+use tokio::time::{self, Instant};
 
 /// 带退避的重试执行器（严格遵守 deadline）
-///
-/// - 每次 attempt 都会被 `remaining` 约束，避免单次 operation 卡住导致总耗时超过 deadline
-/// - deadline 到期时返回最后一次错误，或 timeout_error
 pub async fn retry_with_backoff<T, E, F, Fut>(
     deadline: Instant,
     mut operation: F,
     is_retryable: fn(&E) -> bool,
-    timeout_error: fn() -> E,  // 超时时返回的错误
+    timeout_error: fn() -> E,
 ) -> Result<T, E>
 where
     F: FnMut(Duration) -> Fut,
@@ -323,31 +296,21 @@ where
             break;
         }
 
-        // 关键：给每次 attempt 套一层 remaining timeout，防止单次 operation 超时拖死 deadline
         let attempt = time::timeout(remaining, operation(remaining)).await;
 
         match attempt {
             Ok(Ok(result)) => return Ok(result),
-
             Ok(Err(e)) if is_retryable(&e) => {
                 last_error = Some(e);
-
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-
-                if let Some(delay) = backoff.next_delay() {
-                    time::sleep(delay.min(remaining)).await;
-                } else {
-                    break;
+                if remaining.is_zero() { break; }
+                match backoff.next_delay() {
+                    Some(delay) => time::sleep(delay.min(remaining)).await,
+                    None => break,
                 }
             }
-
             Ok(Err(e)) => return Err(e),
-
-            // attempt 被 deadline 截断
-            Err(_elapsed) => break,
+            Err(_) => break, // deadline 截断
         }
     }
 
@@ -355,33 +318,24 @@ where
 }
 ```
 
-#### A.1.4 OutprocOutGate 重试实现
+### A.4 send_request / send_message 重试
 
 ```rust
 // outbound/outproc_out_gate.rs
 
-use std::pin::Pin;
-use tokio::select;
-use tokio::time::{self, Duration, Instant};
-
 impl OutprocOutGate {
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         let deadline = Instant::now() + Duration::from_millis(envelope.timeout_ms as u64);
-
-        // 关键：同一个 request_id 只注册一次 waiter，避免重试时覆盖 pending_requests 导致晚到响应丢失
-        let (tx, mut rx) = oneshot::channel();
-        self.pending_requests
-            .write()
-            .await
-            .insert(envelope.request_id.clone(), tx);
-
-        // 如果最终失败/退出，一定清理 pending
         let request_id = envelope.request_id.clone();
+
+        // 注册 response waiter（只注册一次，重试复用同一个 channel）
+        let (tx, mut rx) = oneshot::channel();
+        self.pending_requests.write().await
+            .insert(request_id.clone(), tx);
 
         let mut backoff = ExponentialBackoff::new();
         let mut last_error: Option<ProtocolError> = None;
 
-        // 发送 + 等待响应：一个 loop 内完成，rx 不会被 timeout() 丢掉
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -389,451 +343,211 @@ impl OutprocOutGate {
                 return Err(last_error.unwrap_or(ProtocolError::Timeout).into());
             }
 
-            // 1) 单次发送（transport-level），这里的超时由 outer remaining 约束
+            // 发送
             if let Err(e) = self.do_send(target, PayloadType::RpcReliable, &envelope).await {
                 if Self::is_retryable_transport(&e) {
                     last_error = Some(e);
+                    if let Some(delay) = backoff.next_delay() {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        time::sleep(delay.min(remaining)).await;
+                        continue;
+                    } else {
+                        break;
+                    }
                 } else {
                     self.pending_requests.write().await.remove(&request_id);
                     return Err(e.into());
                 }
             }
 
-            // 2) 等待响应（不使用 tokio::time::timeout，以免丢掉 rx）
-            //    如果超时则进入 backoff 后重发；如果收到响应则成功返回
+            // 等响应
             let wait = time::sleep(remaining);
             tokio::pin!(wait);
 
             select! {
                 biased;
-
                 res = &mut rx => {
                     self.pending_requests.write().await.remove(&request_id);
                     return res
                         .map_err(|_| ProtocolError::TransportError("channel closed".into()))
                         .map(Into::into);
                 }
-
                 _ = &mut wait => {
-                    // response-level timeout：默认不当作 retryable，除非你确认“连接刚断/正在重连”
-                    last_error = Some(ProtocolError::Timeout);
-
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    if remaining.is_zero() {
-                        self.pending_requests.write().await.remove(&request_id);
-                        return Err(ProtocolError::Timeout.into());
-                    }
-
-                    if let Some(delay) = backoff.next_delay() {
-                        time::sleep(delay.min(remaining)).await;
-                        continue;
-                    } else {
-                        self.pending_requests.write().await.remove(&request_id);
-                        return Err(ProtocolError::Timeout.into());
-                    }
+                    self.pending_requests.write().await.remove(&request_id);
+                    return Err(ProtocolError::Timeout.into());
                 }
             }
         }
+
+        self.pending_requests.write().await.remove(&request_id);
+        Err(last_error.unwrap_or(ProtocolError::Timeout).into())
     }
 
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        // 这里保留原逻辑，但将 Timeout 排除在 retryable 之外
         let deadline = Instant::now() + MESSAGE_DEFAULT_TIMEOUT;
-
         retry_with_backoff(
             deadline,
-            |_remaining| self.send_message_once(target, envelope.clone()),
+            |_remaining| self.do_send(target, PayloadType::RpcReliable, &envelope),
             Self::is_retryable_transport,
             || ProtocolError::Timeout,
-        )
-        .await
+        ).await
     }
 
-    pub async fn send_data_stream(
-        &self,
-        target: &ActrId,
-        payload_type: PayloadType,
-        mut data: DataStream,
-    ) -> ActorResult<()> {
-        // LatencyFirst 不重试
-        if !payload_type.requires_reliable_send() {
-            return self.send_data_stream_once(target, payload_type, &data).await;
-        }
-
-        // 注入 chunk_id（仅首次，重试保持相同 ID）
-        if !data.metadata.iter().any(|m| m.key == "chunk_id") {
-            data.metadata.push(MetadataEntry {
-                key: "chunk_id".into(),
-                value: Uuid::new_v4().to_string(),
-            });
-        }
-
-        let deadline = Instant::now() + MESSAGE_DEFAULT_TIMEOUT;
-
-        retry_with_backoff(
-            deadline,
-            |_remaining| self.send_data_stream_once(target, payload_type, &data),
-            Self::is_retryable_transport,
-            || ProtocolError::Timeout,
-        )
-        .await
-    }
-
-    // --- 单次发送方法 ---
-
-    async fn send_message_once(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        self.do_send(target, PayloadType::RpcReliable, &envelope).await
-    }
-
-    async fn send_data_stream_once(
-        &self,
-        target: &ActrId,
-        payload_type: PayloadType,
-        data: &DataStream,
-    ) -> ActorResult<()> {
-        let dest = Self::to_dest(target);
-        let bytes = data.encode_to_vec();
-        self.transport_manager
-            .send(&dest, payload_type, &bytes)
-            .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))
-    }
-
-    async fn do_send(&self, target: &ActrId, payload_type: PayloadType, envelope: &RpcEnvelope) -> ActorResult<()> {
-        let data = Self::serialize_envelope(envelope);
-        let dest = Self::to_dest(target);
-        self.transport_manager
-            .send(&dest, payload_type, &data)
-            .await
-            .map_err(|e| ProtocolError::TransportError(e.to_string()))
-    }
-
-    // 只把“明确的 transport transient”当作 retryable（避免 timeout 放大）
     fn is_retryable_transport(e: &ProtocolError) -> bool {
         matches!(e, ProtocolError::TransportError(_))
     }
 }
 ```
 
-#### A.1.5 PayloadType 扩展
-
-```rust
-impl PayloadType {
-    pub fn requires_reliable_send(&self) -> bool {
-        matches!(self, Self::RpcReliable | Self::RpcSignal | Self::StreamReliable)
-    }
-}
-```
-
 ---
 
-### A.2 Phase 2 代码（接收端去重）
+## 附录 B：接收端去重参考代码（方案二）
 
-#### A.2.1 去重接口与默认实现
+### B.1 DedupState
 
 ```rust
-// utils/dedup.rs
+// lifecycle/dedup.rs
 
-use async_trait::async_trait;
 use bytes::Bytes;
-use lru::LruCache;
-use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
-// ============== 去重接口 ==============
+const DEDUP_TTL: Duration = Duration::from_secs(120);
 
-/// 去重存储接口
-/// 
-/// 框架提供默认的 LRU+TTL 实现，适合小并发量场景。
-/// 高并发或需要强幂等保证时，可注入 Redis/DB 实现。
-#[async_trait]
-pub trait DedupStore: Send + Sync {
-    /// 检查 key 是否存在（未过期）
-    async fn contains(&self, key: &str) -> bool;
-    
-    /// 标记 key 已处理
-    async fn mark(&self, key: &str);
-    
-    /// 获取缓存的响应（用于 RPC）
-    async fn get_response(&self, key: &str) -> Option<Bytes>;
-    
-    /// 缓存响应
-    async fn put_response(&self, key: &str, value: Bytes);
-
-    /// 尝试标记请求为"处理中"，返回 true 表示成功（首次），false 表示已有其他请求在处理
-    /// 注意：如果 handler 崩溃/取消，需调用 clear_inflight 清理，否则后续请求会被误拒
-    async fn try_mark_inflight(&self, key: &str) -> bool;
-    
-    /// 清除"处理中"标记（handler 完成或失败时调用）
-    async fn clear_inflight(&self, key: &str);
+enum DedupResult {
+    New,                        // 首次收到
+    DuplicateRequest(Bytes),    // 重复 RPC，返回缓存响应
+    DuplicateMessage,           // 重复单向消息，忽略
 }
 
-// ============== 默认实现：LRU + TTL ==============
-
-/// 内存去重存储（LRU + TTL）
-/// 
-/// 适用场景：
-/// - 小并发量（< 1k QPS）
-
-pub struct LruDedupStore {
-    /// 消息/数据流 ID 去重
-    ids: Mutex<LruCache<String, Instant>>,
-    /// RPC 响应缓存
-    responses: Mutex<LruCache<String, (Bytes, Instant)>>,
-    /// 正在处理中的请求
-    inflight: Mutex<HashSet<String>>,
+/// Per-Actor 去重状态（无需 Mutex，Actor 串行保证安全）
+///
+/// 参考：Proto.Actor DeduplicationContext
+/// - 普通 HashMap + TTL，惰性清理
+/// - check-and-mark 一步完成，无竞态
+struct DedupState {
+    seen: HashMap<String, (Instant, Option<Bytes>)>,
     ttl: Duration,
 }
 
-impl LruDedupStore {
-    pub fn new(capacity: usize, ttl: Duration) -> Self {
-        Self {
-            ids: Mutex::new(LruCache::new(NonZeroUsize::new(capacity).unwrap())),
-            responses: Mutex::new(LruCache::new(NonZeroUsize::new(capacity).unwrap())),
-            inflight: Mutex::new(HashSet::new()),
-            ttl,
+impl DedupState {
+    fn new() -> Self {
+        Self { seen: HashMap::new(), ttl: DEDUP_TTL }
+    }
+
+    fn check(&mut self, request_id: &str) -> DedupResult {
+        self.cleanup();
+
+        if let Some((ts, cached)) = self.seen.get_mut(request_id) {
+            if ts.elapsed() < self.ttl {
+                *ts = Instant::now();
+                return match cached {
+                    Some(resp) => DedupResult::DuplicateRequest(resp.clone()),
+                    None => DedupResult::DuplicateMessage,
+                };
+            }
+        }
+
+        self.seen.insert(request_id.to_string(), (Instant::now(), None));
+        DedupResult::New
+    }
+
+    fn cache_response(&mut self, request_id: &str, response: Bytes) {
+        if let Some(entry) = self.seen.get_mut(request_id) {
+            entry.0 = Instant::now();
+            entry.1 = Some(response);
         }
     }
-}
 
-impl Default for LruDedupStore {
-    fn default() -> Self {
-        Self::new(10_000, Duration::from_secs(300))
-    }
-}
-
-#[async_trait]
-impl DedupStore for LruDedupStore {
-    async fn contains(&self, key: &str) -> bool {
-        let cache = self.ids.lock().await;
-        cache.peek(key)
-            .map(|ts| ts.elapsed() < self.ttl)
-            .unwrap_or(false)
-    }
-
-    async fn mark(&self, key: &str) {
-        self.ids.lock().await.put(key.to_string(), Instant::now());
-    }
-
-    async fn get_response(&self, key: &str) -> Option<Bytes> {
-        let cache = self.responses.lock().await;
-        cache.peek(key)
-            .filter(|(_, ts)| ts.elapsed() < self.ttl)
-            .map(|(v, _)| v.clone())
-    }
-
-    async fn put_response(&self, key: &str, value: Bytes) {
-        self.responses.lock().await.put(key.to_string(), (value, Instant::now()));
-    }
-
-    async fn try_mark_inflight(&self, key: &str) -> bool {
-        self.inflight.lock().await.insert(key.to_string())
-    }
-
-    async fn clear_inflight(&self, key: &str) {
-        self.inflight.lock().await.remove(key);
+    fn cleanup(&mut self) {
+        let ttl = self.ttl;
+        self.seen.retain(|_, (ts, _)| ts.elapsed() < ttl);
     }
 }
 ```
 
-#### A.2.2 WebRtcGate 集成
+### B.2 ActrNode 集成
 
 ```rust
-// wire/webrtc/gate.rs
+// lifecycle/actr_node.rs
 
-pub struct WebRtcGate {
-    // ... 现有字段 ...
-    dedup: Arc<dyn DedupStore>,  // 去重存储（可替换）
-}
+impl<W: Workload> ActrNode<W> {
+    // 新增字段: dedup_state: DedupState
 
-impl WebRtcGate {
-    /// 使用默认 LRU 去重
-    pub fn new(/* ... */) -> Self {
-        Self::with_dedup(Arc::new(LruDedupStore::default()))
-    }
-
-    /// 使用自定义去重存储
-    pub fn with_dedup(dedup: Arc<dyn DedupStore>) -> Self {
-        Self {
-            // ... 现有字段初始化 ...
-            dedup,
-        }
-    }
-
-    async fn handle_envelope(&self, envelope: RpcEnvelope, from: &ActrId, ...) {
-        let id = &envelope.request_id;
-
-        // Response → 原有逻辑
-        if self.pending_requests.read().await.contains_key(id) {
-            // ...
-            return;
+    pub async fn handle_incoming(
+        &mut self,
+        envelope: RpcEnvelope,
+        caller_id: Option<&ActrId>,
+    ) -> ActorResult<Bytes> {
+        // 去重拦截
+        match self.dedup_state.check(&envelope.request_id) {
+            DedupResult::DuplicateRequest(cached) => return Ok(cached),
+            DedupResult::DuplicateMessage => return Ok(Bytes::new()),
+            DedupResult::New => {}
         }
 
-        // Request → 查响应缓存，再查 inflight
-        if envelope.is_request {
-            if let Some(cached) = self.dedup.get_response(id).await {
-                self.do_send_response(from, id, cached).await;
-                return;
-            }
-            // 检查是否有其他请求正在处理
-            if !self.dedup.try_mark_inflight(id).await {
-                return; // 已有相同请求在处理中，忽略
-            }
-        } 
-        // Message → 查去重
-        else if self.dedup.contains(id).await {
-            return;
-        } else {
-            self.dedup.mark(id).await;
+        // 正常处理
+        let ctx = self.context_factory.create(/* ... */);
+        let result = W::Dispatcher::dispatch(&self.workload, envelope.clone(), &ctx).await;
+
+        // 缓存 RPC 响应
+        if let Ok(ref response) = result {
+            self.dedup_state.cache_response(&envelope.request_id, response.clone());
         }
 
-        mailbox.enqueue(...).await;
-    }
-
-    /// 发送 RPC 响应（自动缓存，确保幂等）
-    pub async fn send_response(&self, to: &ActrId, request_id: &str, response: Bytes) {
-        // 1. 清除 inflight 标记
-        self.dedup.clear_inflight(request_id).await;
-        
-        // 2. 缓存响应（即使发送失败，重试时也能返回缓存）
-        self.dedup.put_response(request_id, response.clone()).await;
-        
-        // 3. 发送
-        self.do_send_response(to, request_id, response).await;
-    }
-
-    async fn do_send_response(&self, to: &ActrId, request_id: &str, response: Bytes) {
-        // 实际发送逻辑...
+        result
     }
 }
-```
-
-#### A.2.3 DataStreamRegistry 集成
-
-```rust
-// inbound/data_stream_registry.rs
-
-pub struct DataStreamRegistry {
-    callbacks: RwLock<HashMap<String, DataStreamCallback>>,
-    dedup: Arc<dyn DedupStore>,  // 去重存储（可替换）
-}
-
-impl DataStreamRegistry {
-    /// 使用默认 LRU 去重
-    pub fn new() -> Self {
-        Self::with_dedup(Arc::new(LruDedupStore::default()))
-    }
-
-    /// 使用自定义去重存储
-    pub fn with_dedup(dedup: Arc<dyn DedupStore>) -> Self {
-        Self {
-            callbacks: RwLock::new(HashMap::new()),
-            dedup,
-        }
-    }
-
-    pub async fn dispatch(&self, mut stream: DataStream) {
-        // 提取并移除 chunk_id
-        let chunk_id = Self::extract_chunk_id(&mut stream.metadata);
-        
-        // 去重检查
-        if let Some(id) = &chunk_id {
-            if self.dedup.contains(id).await {
-                return; // 重复，忽略
-            }
-            self.dedup.mark(id).await;
-        }
-
-        // 分发（metadata 中已无 chunk_id，对应用层透明）
-        if let Some(cb) = self.callbacks.read().await.get(&stream.stream_id) {
-            cb(stream).await;
-        }
-    }
-
-    /// 提取并移除 chunk_id
-    fn extract_chunk_id(metadata: &mut Vec<MetadataEntry>) -> Option<String> {
-        if let Some(pos) = metadata.iter().position(|m| m.key == "chunk_id") {
-            Some(metadata.remove(pos).value)
-        } else {
-            None
-        }
-    }
-}
-```
-
-#### A.2.4 使用示例
-
-```rust
-// 场景 1：小并发量 - 使用默认 LRU
-let registry = DataStreamRegistry::new();
-let gate = WebRtcGate::new(/* ... */);
-
-// 场景 2：高并发/分布式 - 注入 Redis 实现
-let redis_dedup = Arc::new(RedisDedupStore::new("redis://localhost", Duration::from_secs(300)));
-let registry = DataStreamRegistry::with_dedup(redis_dedup.clone());
-let gate = WebRtcGate::with_dedup(redis_dedup);
-
 ```
 
 ---
 
-## 附录 B: 测试用例
+## 附录 C：测试用例
+
+### C.1 发送端重试
 
 ```rust
 #[tokio::test]
-async fn test_retry_on_transient_error() {
-    // 模拟第一次失败，第二次成功
-    // 验证：返回成功，重试次数为 1
+async fn test_retry_succeeds_on_second_attempt() {
+    // 第一次 TransportError，第二次成功 → 返回成功
 }
 
 #[tokio::test]
-async fn test_no_retry_for_latency_first() {
-    // 发送 LatencyFirst 消息失败
-    // 验证：不重试，直接返回错误
+async fn test_no_retry_for_non_transport_error() {
+    // SerializationError → 不重试，直接返回错误
 }
 
 #[tokio::test]
-async fn test_retry_respects_deadline() {
-    // 设置 1s 超时，模拟持续失败
-    // 验证：在 deadline 内停止重试
+async fn test_retry_stops_at_deadline() {
+    // 持续失败 + 短 timeout → 在 deadline 内停止
 }
 
 #[tokio::test]
-async fn test_request_idempotency() {
-    // 发送相同 request_id 的 RPC 请求两次
-    // 验证：第二次返回缓存的响应，不重复处理
+async fn test_independent_retry_per_request() {
+    // 请求 A 重试中，请求 B 正常发送 → 互不影响
+}
+```
+
+### C.2 接收端去重（方案二）
+
+```rust
+#[tokio::test]
+async fn test_first_request_passes_through() {
+    // 首次 request_id → DedupResult::New
 }
 
 #[tokio::test]
-async fn test_message_deduplication() {
-    // 发送相同 request_id 的单向消息两次
-    // 验证：第二次被忽略，不重复处理
+async fn test_duplicate_rpc_returns_cached() {
+    // 相同 request_id 再次到达 → 返回缓存响应
 }
 
 #[tokio::test]
-async fn test_data_stream_deduplication() {
-    // 发送带 chunk_id 的数据流两次
-    // 验证：第二次被忽略，且应用层看不到 chunk_id
+async fn test_duplicate_message_ignored() {
+    // 相同 request_id 的 message → 忽略
 }
 
 #[tokio::test]
-async fn test_dest_isolation() {
-    // 并发发送到 Dest A 和 Dest B
-    // 验证：Dest A 的重试不影响 Dest B
-}
-
-#[tokio::test]
-async fn test_custom_dedup_store() {
-    // 注入自定义 DedupStore 实现
-    // 验证：去重逻辑使用自定义实现
-}
-
-#[tokio::test]
-async fn test_lru_eviction_behavior() {
-    // 创建小容量 LruDedupStore
-    // 填满后继续插入，验证旧条目被驱逐
-    // 验证：被驱逐的 ID 重新提交会被当作新请求
+async fn test_expired_entry_treated_as_new() {
+    // TTL 过期后 → 当作新请求处理
 }
 ```
