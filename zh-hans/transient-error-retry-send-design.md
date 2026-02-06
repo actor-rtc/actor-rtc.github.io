@@ -2,13 +2,13 @@
 
 > **版本**: v1.0 | **状态**: 方案评审 | **更新**: 2026-02-06
 >
-> **待决策**：接收端去重方案（[方案一](#方案一业务层自行去重) vs [方案二](#方案二框架内置去重)）
+> **待决策**：哪些方法需要加入重试？以及接收端去重采用[方案一](#方案一业务层自行去重)还是[方案二](#方案二框架内置去重推荐)？
 
 ---
 
 ## 1. 问题
 
-网络短暂中断时（WiFi→4G 切换、信号波动），框架能自动重连，但**正在发送的请求已经丢了**：
+网络短暂中断时（如 WiFi→4G 切换、信号波动），虽然框架能够自动完成重连，但**正在发送的请求没有自动重试**：
 
 ```
 调用方发送请求 → 网络断开 → 请求失败，错误抛给调用方
@@ -27,26 +27,40 @@
 
 ## 2. 解决方案：发送端自动重试
 
-思路：遇到 Transient 错误时，框架自动在发送端重试。发送端无需改动；
+思路：遇到 Transient 错误时，框架自动在发送端重试。
 ### 哪些方法需要重试（⏳ 待确认）
 
-| 方法 | 加入重试 | 说明 |
-|------|---------|------|
-| `send_request()` | ✅ 计划加入 | RPC 请求，Transient 错误时自动重发 |
-| `send_message()` | ✅ 计划加入 | 单向消息，Transient 错误时自动重发 |
-| `send_data_stream()` | ❌ 不加入 | Fast Path 低延迟通道，重试与其设计冲突 |
-| `send_media_sample()` | ❌ 不加入 | RTP 协议自身处理重传 |
+计划在 **`OutprocOutprocOutGate`**（跨进程出站门）对以下方法加入重试。
 
-### 什么是 Transient 错误
+| 方法 | 上层调用 | 加入重试 | 说明 |
+|------|---------|---------|------|
+| `send_request()` | `ctx.call()` | ✅ 计划加入 | RPC 请求，Transient 错误时自动重发 |
+| `send_message()` | `ctx.tell()` | ✅ 计划加入 | 单向消息，Transient 错误时自动重发 |
+| `send_data_stream()` | `ctx.send_data_stream()` | ❌ 不加入 | Fast Path 低延迟通道，重试与其设计冲突 |
+| `send_media_sample()` | `ctx.send_media_sample()` | ❌ 不加入 | RTP 协议自身处理重传 |
 
-只有**网络瞬断类**错误才重试，其他错误重试也没用，直接返回。
+> **为什么在 OutprocOutGate 层？** OutprocOutGate 是所有跨进程/网络出站消息的统一出口，加重试可以对上层完全透明，也便于只对跨进程/网络路径进行重试。此外，这一层还能清晰区分不同发送方式，互不影响。
 
-| 可重试（Transient） | 不重试 |
-|-------|--------|
-| `TransportError` — 连接断开、写入失败 | `Timeout` — 已超时，重试无意义 |
-| `ConnectionReset` — 对端重置连接 | `SerializationError` — 数据格式错误 |
-| `ChannelClosed` — WebSocket/DataChannel 意外关闭 | `ActorNotFound` — 目标不存在 |
-| | `PermissionDenied` — 权限不足 |
+### 什么是 Transient 错误 
+
+只有 **Transient（临时性）** 错误才重试 —— 即"过一会儿重试可能自行恢复"的错误。其他错误重试也不会改变结果，直接返回。
+
+判断
+
+框架中 `RuntimeError` 已定义了 `ErrorClassification` 和 `is_retryable()` 方法（TODO错误需要梳理一下）：
+
+| 分类 | `RuntimeError` 变体 | 说明 |
+|------|---------------------|------|
+| **Transient（可重试）** | `Unavailable` | 连接断开、对端过载、临时资源耗尽 |
+| | `DeadlineExceeded` | 网络延迟、对端响应慢 |
+| **Permanent（不可重试）** | `NotFound` | 目标 Actor 不存在 |
+| | `InvalidArgument` | 请求参数错误 |
+| | `FailedPrecondition` | 系统状态不满足 |
+| | `PermissionDenied` | 权限不足 |
+| **Poison（需人工干预）** | `DecodeFailure` | 消息损坏，进入 Dead Letter Queue |
+
+> **现状问题（TODO）**：目前错误码使用不规范 —— `OutprocOutGate` 直接使用 `ProtocolError`（如 `TransportError`、`Timeout`），没有统一走 `RuntimeError` 的分类体系。实现重试前需先规范错误码：梳理 `ProtocolError` → `RuntimeError` 的映射关系，确保重试判断统一使用 `RuntimeError::is_retryable()`。
+
 
 ### 重试策略
 
@@ -75,18 +89,17 @@
 
 ## 3. 重试带来的新问题
 
-自动重试解决了丢消息的问题，但同时引入了一系列新问题：
-
+自动重试的目的是提升网络瞬时故障情况下的可靠性，但这也引入了一些新的问题：
 | 问题 | 说明 | 如何解决 |
 |------|------|---------|
-| **消息重复** | 发送端以为失败了重试，但第 1 次其实到达了接收端 → 接收端收到两次 | 接收端去重（见 [§4](#4-接收端去重方案待决策)） |
+| **消息幂等** | 发送端以为失败了重试，但第 1 次其实到达了接收端 → 接收端收到两次 | 接收端去重（见 [§4](#4-接收端去重方案--待决策)） |
 | **重试风暴** | 大量客户端同时遇到网络抖动，集体重试 → 瞬间流量翻倍，压垮服务端 | 指数退避 + 随机抖动，打散重试时间点 |
 | **延迟放大** | 重试需要等待退避间隔，调用方感知到的延迟增大 | deadline 模式：所有重试必须在原始 timeout 内完成，不额外延长等待 |
 | **级联故障** | 下游服务已过载，重试进一步加剧负载 → 雪崩 | 最多 3 次重试 + deadline 兜底；后续可扩展熔断机制（Circuit Breaker） |
 
-其中**消息重复**是需要在框架层面决策的核心问题，下面详细展开。
+其中**消息幂等**是需要在框架层面决策的核心问题，下面详细展开。
 
-### 消息重复的典型场景
+### 消息幂等的典型场景
 
 ```
 发送端                        接收端
@@ -102,7 +115,7 @@
 
 ---
 
-## 4. 接收端去重方案（⏳ 待决策）
+## 4. 接收端去重方案 — 待决策
 
 ### 方案一：业务层自行去重
 
@@ -127,9 +140,7 @@ async fn handle_transfer(&mut self, req: TransferRequest, ctx: &impl Context) ->
 }
 ```
 
-### 方案二：框架内置去重
-
-> 参考：[Proto.Actor DeduplicationContext](https://github.com/asynkron/protoactor-go/blob/dev/actor/deduplication_context.go)
+### 方案二：框架内置去重（推荐）
 
 框架在 handler 执行前自动拦截重复消息，**业务层完全无感知**。
 
@@ -142,30 +153,31 @@ async fn handle_transfer(&mut self, req: TransferRequest, ctx: &impl Context) ->
 
 ```mermaid
 flowchart TD
-    A["收到消息\n(request_id)"] --> B{"DedupState\n见过这个 ID？"}
+    A["收到消息 (request_id)"] --> B{"DedupState，见过这个 ID？"}
 
     B -- "没见过" --> C["标记为已见"]
     C --> D["执行 handler"]
-    D --> E{"是 RPC？"}
-    E -- "是" --> F["缓存响应"]
-    E -- "否" --> G(("完成"))
+    D --> E{"是否有返回值？"}
+    E -- "是(call)" --> F["缓存返回值"]
+    E -- "否(tell)" --> G(("完成"))
     F --> G
 
-    B -- "见过 + 有缓存响应" --> H["返回缓存响应\n不执行 handler"]
-    B -- "见过 + 无缓存" --> I["忽略\n（重复的单向消息）"]
-    H --> G
+    B -- "见过" --> H{"有缓存返回值？"}
+    H -- "有" --> I["返回缓存的值，跳过 handler"]
+    H -- "无" --> J["直接忽略，跳过 handler"]
     I --> G
+    J --> G
 
     style B fill:#fff3cd,stroke:#ffc107
     style D fill:#d1ecf1,stroke:#17a2b8
-    style H fill:#d4edda,stroke:#28a745
     style I fill:#d4edda,stroke:#28a745
+    style J fill:#d4edda,stroke:#28a745
 ```
 
 关键设计点：
 
 - `DedupState` 是 ActrNode 的普通字段（`HashMap`），不需要 `Mutex`
-- Actor 的 `handle_incoming` 在 Mailbox 出队循环中串行调用，天然无竞态
+- Actor 的 [`handle_incoming`](#b2-actrnode-集成) 在 Mailbox 出队循环中串行调用，天然无竞态
 - 检查 + 标记在同一步完成，没有 TOCTOU 窗口
 - 过期条目惰性清理（每次检查时顺带清理）
 
@@ -178,6 +190,12 @@ flowchart TD
 | **劣势** | 每个 handler 可能要写去重 | 重复消息仍进入 Mailbox |
 | **框架改动** | 无 | 新增 `DedupState` + 改造 `handle_incoming` |
 | **适合** | 天然幂等业务 | 大部分常规业务 |
+
+### 建议
+
+框架自己引入了重试，也就自己制造了"消息幂等"问题。如果选方案一，等于框架制造了问题却让业务来处理，开发者容易忽略导致静默重复执行。
+
+建议：**方案二为默认，方案一为可选** —— 框架默认提供去重保护，业务有特殊需求时可关闭。
 
 ---
 
@@ -323,7 +341,7 @@ where
 ```rust
 // outbound/outproc_out_gate.rs
 
-impl OutprocOutGate {
+impl OutprocOutprocOutGate {
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         let deadline = Instant::now() + Duration::from_millis(envelope.timeout_ms as u64);
         let request_id = envelope.request_id.clone();
@@ -422,7 +440,6 @@ enum DedupResult {
 
 /// Per-Actor 去重状态（无需 Mutex，Actor 串行保证安全）
 ///
-/// 参考：Proto.Actor DeduplicationContext
 /// - 普通 HashMap + TTL，惰性清理
 /// - check-and-mark 一步完成，无竞态
 struct DedupState {
