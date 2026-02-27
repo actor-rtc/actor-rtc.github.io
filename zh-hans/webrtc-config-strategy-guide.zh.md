@@ -237,3 +237,28 @@ ice_relay_acceptance_min_wait = 2000        # 直连优先
 
 - 服务端部署**强烈建议**配置端口范围 (`port_range_start/end`)。
 - 移动端/客户端一般**无需配置**端口。
+
+## 6. 自适应 ICE Candidate 策略
+
+当配置了 `public_ips` 时，Actr 会根据双方是否都具备固定网络配置（`udp_ports` + `public_ips`），自动选择最优的 NAT 1:1 映射类型（仅 Answerer 侧生效）。
+
+**为什么需要这个策略？** `set_nat_1to1_ips` 使用 Host 类型会**替换**内网 host candidate，使用 Srflx 类型则会**保留**内网 host candidate。根据双方网络配置自适应选择，可以实现：
+- **服务端 ↔ 服务端**（双方都有公网 IP）：使用 Srflx 保留内网 host candidate，同局域网的节点可以直接走内网通信，不用绕公网。
+- **服务端 ↔ 客户端**（只有一方有公网 IP）：使用 Host 将公网 IP 提升为最高优先级，让客户端直接与服务端的公网地址配对，加速连接建立。
+
+
+|    本方     |    对方     |   映射类型   | 原因                                                            |
+| :---------: | :---------: | :----------: | --------------------------------------------------------------- |
+| ✅ 有公网 IP | ❌ 无公网 IP |   **Host**   | 公网 IP 替换 host candidate，跳过不可达的内网 IP 配对，加速直连 |
+| ✅ 有公网 IP | ✅ 有公网 IP |  **Srflx**   | 保留内网 host candidate，同局域网优先走内网直连，跨网络走公网   |
+| ❌ 无公网 IP |    任意     | Host + Srflx | 默认行为                                                        |
+
+> `remote_fixed` 在 RoleAssignment 阶段通过 protobuf 消息携带。
+
+---
+
+## 总结
+
+- 能用 **场景 B/C** (`ephemeral_ports`) 就尽量用，效果最好。
+- 实在受限再用 **场景 D** (`muxed_port`)。      
+- 移动端直接用 **场景 A**。
