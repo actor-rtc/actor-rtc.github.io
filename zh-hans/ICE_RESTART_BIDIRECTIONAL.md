@@ -456,7 +456,7 @@ for _ in 0..ICE_RESTART_MAX_RETRIES {
 | **依赖 NetworkEvent** | 是（需要平台网络感知）                     | **否（纯 Offerer 端改动）**                                     |
 | **适用场景**          | 对恢复延迟敏感、已有 NetworkEvent 基础设施 | 简单场景、无平台网络感知、可接受秒级延迟                        |
 
-> ¹ **端到端恢复**：从 Answerer 网络恢复到 ICE restart 完全完成（连接状态变为 Connected）。**方案 A 耗时构成**：信令重试等待/RTT (~1s) + Offer/Answer 交换 + ICE candidate gathering + connectivity check (1~4s)。**方案 B 耗时构成**：盲等当前一轮剩余时间 `0 ~ (TIMEOUT + INTERVAL)` (当前配置平均 ~5s) + 相同的 ICE 协商开销。
+> ¹ **端到端恢复**：从 Answerer 网络恢复到 ICE restart 完全完成（连接状态变为 Connected）。**方案 A 耗时构成**：信令重试等待/RTT (\~1s) + Offer/Answer 交换 + ICE candidate gathering + connectivity check (1\~4s)。**方案 B 耗时构成**：盲等当前一轮剩余时间 `0 ~ (TIMEOUT + INTERVAL)` (当前配置平均 \~5s) + 相同的 ICE 协商开销。
 
 ### 建议
 
