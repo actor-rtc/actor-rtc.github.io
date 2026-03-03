@@ -56,95 +56,119 @@ pub trait Workload: Send + Sync + 'static {
 
 ---
 
-## 解决方案（待确认）
+## 解决方案
 
-以代码为准，所有生命周期钩子直接加在 `Workload` trait 中。文档中描述的多个独立方法合并/精简为以下 4 个钩子。
+以代码为准，所有生命周期钩子直接加在 `Workload` trait 中。按**生命周期 / signaling / transport**三个维度拆分为 13 个独立钩子，每个钩子职责单一、命名即文档。
 
-### Workload 钩子清单
+### Workload 钩子清单（v1）
+
+> 当前按**生命周期 / signaling / transport** 三个维度拆分为 13 个独立钩子。后续使用过程中按需添加或合并，保持每个钩子职责单一。
 
 ```rust
 #[async_trait]
 pub trait Workload: Send + Sync + 'static {
     type Dispatcher: MessageDispatcher<Workload = Self>;
 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // 生命周期
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// Actor 启动，初始化业务资源
     async fn on_start<C: Context>(&self, _ctx: &C) -> ActorResult<()> { Ok(()) }
+
+    /// Actor 就绪（信令已连接、注册完成），可对外服务
+    async fn on_ready<C: Context>(&self, _ctx: &C) -> ActorResult<()> { Ok(()) }
+
+    /// Actor 停止，释放资源、持久化状态
     async fn on_stop<C: Context>(&self, _ctx: &C) -> ActorResult<()> { Ok(()) }
+
+    /// 运行时异常通知
     async fn on_error<C: Context>(&self, _ctx: &C, _error: RuntimeError) -> ActorResult<()> { Ok(()) }
-    async fn on_network_state<C: Context>(&self, _ctx: &C, _state: NetworkState) -> ActorResult<()> { Ok(()) }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // signaling
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// 开始连接信令服务器
+    async fn on_signaling_connect_start<C: Context>(&self, _ctx: &C) -> ActorResult<()> { Ok(()) }
+
+    /// 信令已连接，Actor 在线
+    async fn on_signaling_connected<C: Context>(&self, _ctx: &C) -> ActorResult<()> { Ok(()) }
+
+    /// 信令断开，Actor 离线
+    async fn on_signaling_disconnected<C: Context>(&self, _ctx: &C) -> ActorResult<()> { Ok(()) }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // transport — WebSocket 
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// 开始建立与对端的 WebSocket 连接
+    async fn on_websocket_connect_start<C: Context>(&self, _ctx: &C, _dest: &ActrId) -> ActorResult<()> { Ok(()) }
+
+    /// 与对端的 WebSocket 连接已建立
+    async fn on_websocket_connected<C: Context>(&self, _ctx: &C, _dest: &ActrId) -> ActorResult<()> { Ok(()) }
+
+    /// 与对端的 WebSocket 连接断开
+    async fn on_websocket_disconnected<C: Context>(&self, _ctx: &C, _dest: &ActrId) -> ActorResult<()> { Ok(()) }
+
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // transport — WebRTC P2P
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    /// 开始建立与对端的 WebRTC P2P 连接
+    async fn on_webrtc_connect_start<C: Context>(&self, _ctx: &C, _dest: &ActrId) -> ActorResult<()> { Ok(()) }
+
+    /// 与对端的 WebRTC P2P 连接已建立
+    async fn on_webrtc_connected<C: Context>(&self, _ctx: &C, _dest: &ActrId, _relayed: bool) -> ActorResult<()> { Ok(()) }
+
+    /// 与对端的 WebRTC P2P 连接断开
+    async fn on_webrtc_disconnected<C: Context>(&self, _ctx: &C, _dest: &ActrId) -> ActorResult<()> { Ok(()) }
 }
 ```
 
-| 钩子               | 触发时机                                 | 参数                  | 使用场景                                                                     |
-| ------------------ | ---------------------------------------- | --------------------- | ---------------------------------------------------------------------------- |
-| `on_start`         | ActrNode 启动完成，WebRTC 后台循环已就绪 | `ctx`                 | 初始化业务资源、向协调服务注册自己在线、启动定时任务                         |
-| `on_stop`          | ActrNode 收到关闭信号，即将退出          | `ctx`                 | 释放业务资源、向协调服务注销、持久化内存状态                                 |
-| `on_error`         | 框架捕获到运行时异常                     | `ctx`, `RuntimeError` | handler panic 后通知业务层                                                   |
-| `on_network_state` | 网络连接状态发生变化                     | `ctx`, `NetworkState` | 信令断开时 UI 显示"重连中"、对端 WebRTC 断开时暂停数据流、连接恢复后同步状态 |
-
-### 合并方法
-
-文档中描述的独立方法合并到 `on_network_state`，通过 `NetworkState` 枚举区分：
-
-| 文档中的方法                | 合并到             | 枚举值                      |
-| --------------------------- | ------------------ | --------------------------- |
-| `on_signaling_connected`    | `on_network_state` | `Signaling(Connected)`      |
-| `on_signaling_disconnected` | `on_network_state` | `Signaling(Disconnected)`   |
-| `on_ready`（信令就绪）      | `on_network_state` | `Signaling(Connected)`      |
-| WebRTC 连接/断开            | `on_network_state` | `Webrtc { actr_id, state }` |
-
-### NetworkState 定义
-
-```rust
-pub enum NetworkState {
-    /// 信令状态（WebSocket → 信令服务器）
-    Signaling(ConnectionState),
-    /// WebRTC 状态（WebRTC → 对端）
-    Webrtc { actr_id: ActrId, state: WebrtcState },
-}
-
-pub enum ConnectionState {
-    Connecting,
-    Connected,
-    Disconnected,
-}
-
-pub enum WebrtcState {
-    Connecting,
-    Connected(TransportMode),
-    Disconnected,
-}
-
-pub enum TransportMode {
-    Direct,   // 直连
-    Relayed,  // 中继
-}
-```
+| 钩子                         | 触发时机                 | 参数                           | 使用场景                      |
+| ---------------------------- | ------------------------ | ------------------------------ | ----------------------------- |
+| `on_start`                   | ActrNode 启动完成        | `ctx`                          | 初始化业务资源、启动定时任务  |
+| `on_ready`                   | 信令已连接、注册完成     | `ctx`                          | 设置 `is_ready`，开始对外服务 |
+| `on_stop`                    | ActrNode 收到关闭信号    | `ctx`                          | 释放业务资源、持久化状态      |
+| `on_error`                   | 框架捕获运行时异常       | `ctx`, `RuntimeError`          | handler panic 后通知业务层    |
+| `on_signaling_connect_start` | 开始连接信令服务器       | `ctx`                          | UI 显示"连接中"               |
+| `on_signaling_connected`     | 信令已连接               | `ctx`                          | 日志、UI 更新                 |
+| `on_signaling_disconnected`  | 信令断开                 | `ctx`                          | UI 显示"重连中"、暂停服务     |
+| `on_websocket_connect_start` | 开始建立 WebSocket 连接  | `ctx`, `dest`                  | 日志                          |
+| `on_websocket_connected`     | WebSocket  连接已建立    | `ctx`, `dest`                  | 对端可达通知                  |
+| `on_websocket_disconnected`  | WebSocket  连接断开      | `ctx`, `dest`                  | 对端不可达                    |
+| `on_webrtc_connect_start`    | 开始建立 WebRTC P2P 连接 | `ctx`, `dest`                  | 日志                          |
+| `on_webrtc_connected`        | WebRTC P2P 连接已建立    | `ctx`, `dest`, `relayed: bool` | 对端直连可达                  |
+| `on_webrtc_disconnected`     | WebRTC P2P 连接断开      | `ctx`, `dest`                  | 对端不可达、标记待同步        |
 
 ### 使用示例
 
 ```rust
-// 网络状态感知
-async fn on_network_state<C: Context>(&self, ctx: &C, state: NetworkState) -> ActorResult<()> {
-    match state {
-        NetworkState::Signaling(ConnectionState::Connected) => {
-            tracing::info!("信令已连接，Actor 已就绪");
-            self.is_ready.store(true, Ordering::Relaxed);
-        }
-        NetworkState::Signaling(ConnectionState::Disconnected) => {
-            tracing::warn!("信令断开，暂停对外服务");
-            self.is_ready.store(false, Ordering::Relaxed);
-        }
-        NetworkState::Webrtc { actr_id, state: WebrtcState::Disconnected } => {
-            tracing::warn!("对端 {} 断开，近期发送可能丢失", actr_id);
-            self.pause_stream_to(&actr_id).await;
-        }
-        NetworkState::Webrtc { actr_id, state: WebrtcState::Connected(mode) } => {
-            tracing::info!("对端 {} 已连接 ({:?})", actr_id, mode);
-            self.resume_stream_to(&actr_id).await;
-        }
-        _ => {}
+impl Workload for MyService {
+    async fn on_ready<C: Context>(&self, _ctx: &C) -> ActorResult<()> {
+        self.is_ready.store(true, Ordering::Relaxed);
+        tracing::info!("✅ 服务上线");
+        Ok(())
     }
-    Ok(())
+
+    async fn on_signaling_disconnected<C: Context>(&self, _ctx: &C) -> ActorResult<()> {
+        self.is_ready.store(false, Ordering::Relaxed);
+        tracing::warn!("⚠️ 信令断开，暂停对外服务");
+        Ok(())
+    }
+
+    async fn on_webrtc_disconnected<C: Context>(&self, _ctx: &C, dest: &ActrId) -> ActorResult<()> {
+        tracing::warn!("⚠️ 对端 {} 断开，近期发送可能丢失", dest);
+        self.pause_stream_to(dest).await;
+        Ok(())
+    }
+
+    async fn on_webrtc_connected<C: Context>(&self, _ctx: &C, dest: &ActrId) -> ActorResult<()> {
+        tracing::info!("✅ 对端 {} 已连接", dest);
+        self.resume_stream_to(dest).await;
+        Ok(())
+    }
 }
 ```
 
@@ -159,24 +183,24 @@ async fn on_network_state<C: Context>(&self, ctx: &C, state: NetworkState) -> Ac
 WebRTC 回调返回 `()`，异常无法通过 `Result` 传播。业界做法（Pion、libwebrtc、mediasoup）是：**应用层关心"连接能不能用"，不关心"哪个回调出了什么错"**。框架内部消化回调异常，只把连接状态变化暴露给应用层。
 
 ```
-回调异常（ICE/DC/SCTP 等）
+回调异常（ICE/DCTP 等）
     ↓
 框架内部处理（日志 + 重试 + 重建通道）
     ↓
 状态收敛：Connected / Disconnected / Reconnecting
     ↓
-on_network_state 通知应用层
+on_signaling_* / on_websocket_* / on_webrtc_* 通知应用层
 ```
 
 ### 各回调当前处理与改进
 
-| 回调               | 当前处理                          | 改进方案                                                           | 触发 `on_network_state`？      |
-| ------------------ | --------------------------------- | ------------------------------------------------------------------ | ------------------------------ |
-| `on_ice_candidate` | 信令发送失败只 log                | 日志记录即可，已有 ICE restart 和重连机制覆盖                      | 否（不影响连接状态）           |
-| `on_data_channel`  | 注册失败只 log，未通知 `ready_tx` | 通知 `ready_tx` 失败信号，框架重试连接                             | 否（连接建立阶段）             |
-| `dc.on_message`    | channel send 失败，消息静默丢弃   | `break` + 触发 `DataChannelClosed`，重建通道；**失败消息写入 DLQ** | **是**（通道关闭 → 状态变化）  |
-| `dc.on_error`      | 只 log，不触发 lane 失效          | 与 `on_close` 统一：`invalidate_lane` + 重建通道                   | **是**（lane 失效 → 状态变化） |
-| `on_track`         | RTP 读取失败 `break`              | 音频通道暂未实现，后续补充                                         | —                              |
+| 回调               | 当前处理                          | 改进方案                                                           | 触发 Workload 钩子？              |
+| ------------------ | --------------------------------- | ------------------------------------------------------------------ | --------------------------------- |
+| `on_ice_candidate` | 信令发送失败只 log                | 日志记录即可，已有 ICE restart 和重连机制覆盖                      | 否（不影响连接状态）              |
+| `on_data_channel`  | 注册失败只 log，未通知 `ready_tx` | 通知 `ready_tx` 失败信号，框架重试连接                             | 否（连接建立阶段）                |
+| `dc.on_message`    | channel send 失败，消息静默丢弃   | `break` + 触发 `DataChannelClosed`，重建通道；**失败消息写入 DLQ** | **是** → `on_webrtc_disconnected` |
+| `dc.on_error`      | 只 log，不触发 lane 失效          | 与 `on_close` 统一：`invalidate_lane` + 重建通道                   | **是** → `on_webrtc_disconnected` |
+| `on_track`         | RTP 读取失败 `break`              | 音频通道暂未实现，后续补充                                         | —                                 |
 
 > **注意**：不在回调中直接执行清理（可能死锁），通过内部事件驱动。
 
@@ -184,13 +208,13 @@ on_network_state 通知应用层
 
 ## 需通知应用层的态势感知事件
 
-除了文档中描述的信令连接/断开等状态变化外，以下 WebRTC 事件也需要通过 `on_network_state` 通知应用层：
+除了信令连接/断开等状态变化外，以下 WebRTC 事件也需要通过 `on_webrtc_disconnected` 通知应用层：
 
-| 事件                                   | 通知原因                             |
-| -------------------------------------- | ------------------------------------ |
-| SCTP 断开（dc.on_close）               | 近期发送可能丢失，应用层需标记待同步 |
-| DataChannel 关闭（dc.on_message 失败） | 通道不可用，框架重建中               |
-| Lane 失效（dc.on_error）               | 通道异常，框架重建中                 |
+| 事件                                   | 触发钩子                 | 通知原因                             |
+| -------------------------------------- | ------------------------ | ------------------------------------ |
+| SCTP 断开（dc.on_close）               | `on_webrtc_disconnected` | 近期发送可能丢失，应用层需标记待同步 |
+| DataChannel 关闭（dc.on_message 失败） | `on_webrtc_disconnected` | 通道不可用，框架重建中               |
+| Lane 失效（dc.on_error）               | `on_webrtc_disconnected` | 通道异常，框架重建中                 |
 
 
 ### SCTP 断开时数据丢失（边界条件）
@@ -214,7 +238,7 @@ on_network_state 通知应用层
 06:08:31.763  send_data_stream seq=12               ← 重连后继续发送（seq=11 已丢失）
 ```
 
-框架通过 `on_network_state` 通知应用层"连接断了，近期发送可能丢失"，由应用层决定是否重新同步。
+框架通过 `on_webrtc_disconnected(dest)` 通知应用层"连接断了，近期发送可能丢失"，由应用层决定是否重新同步。
 
 **通知链路**：
 
@@ -235,33 +259,28 @@ dc.on_close (× N 个 DataChannel)          ← connection.rs
     OutprocOutGate 事件监听                ← outproc_out_gate.rs
     ├── 清理 pending_requests，返回 Err    ← 已有
     ├── close_transport                    ← 已有
-    └── 🆕 通知 Workload::on_network_state(Webrtc { Disconnected })
+    └── 🆕 通知 Workload::on_webrtc_disconnected(dest)
 ```
 
 应用层实现示例：
 
 ```rust
-async fn on_network_state<C: Context>(&self, ctx: &C, state: NetworkState) -> ActorResult<()> {
-    match state {
-        NetworkState::Webrtc { actr_id, state: WebrtcState::Disconnected } => {
-            tracing::warn!("Peer {} disconnected, recent sends may be lost", actr_id);
-            self.mark_stream_needs_resync(&actr_id).await;
-        }
-        _ => {}
-    }
+async fn on_webrtc_disconnected<C: Context>(&self, _ctx: &C, dest: &ActrId) -> ActorResult<()> {
+    tracing::warn!("Peer {} disconnected, recent sends may be lost", dest);
+    self.mark_stream_needs_resync(dest).await;
     Ok(())
 }
 ```
 
-> 本质上 SCTP 断开不算错误（`dc.send()` 返回 Ok，协议层没有违约），而是**网络状态变化引发的数据完整性风险**，所以通过 `on_network_state` 而非 `on_error` 通知。竞态窗口无法完全消除，最终依赖**应用层 ACK + 断点续传**。
+> 本质上 SCTP 断开不算错误（`dc.send()` 返回 Ok，协议层没有违约），而是**网络状态变化引发的数据完整性风险**，所以通过 `on_webrtc_disconnected` 而非 `on_error` 通知。竞态窗口无法完全消除，最终依赖**应用层 ACK + 断点续传**。
 
 ## 需要修改的文档
 
-| 文档                                     | 修改内容                                                                                     |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `appendix-glossary.zh.md`                | Lifecycle 词条：改为"生命周期钩子定义在 `Workload` trait 中"，列出 4 个钩子                  |
-| `2.2-actor-cookbook.zh.md`               | 模式六"网络状态感知"：`impl Lifecycle` → `impl Workload`，用 `on_network_state` 替代独立方法 |
-| `1.2-framework-internal-protocols.zh.md` | Lifecycle trait 定义段落：与代码对齐                                                         |
-| `appendix-runtime-design.zh.md`          | 移除对独立 `Lifecycle` trait 的 `downcast_ref` 等描述                                        |
-| `4.1-overall.zh.md`                      | actr-framework 核心接口列表中移除独立 `Lifecycle`                                            |
-| Context 相关描述                         | 移除 `ctx.log_info()`、`ctx.schedule_tell()` 等不存在的 API                                  |
+| 文档                                     | 修改内容                                                                                                               |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `appendix-glossary.zh.md`                | Lifecycle 词条：改为"生命周期钩子定义在 `Workload` trait 中"，列出 13 个钩子（生命周期 4 + signaling 3 + transport 6） |
+| `2.2-actor-cookbook.zh.md`               | 模式六"网络状态感知"：`impl Lifecycle` → `impl Workload`，用独立钩子替代 `on_network_state`                            |
+| `1.2-framework-internal-protocols.zh.md` | Lifecycle trait 定义段落：与代码对齐                                                                                   |
+| `appendix-runtime-design.zh.md`          | 移除对独立 `Lifecycle` trait 的 `downcast_ref` 等描述                                                                  |
+| `4.1-overall.zh.md`                      | actr-framework 核心接口列表中移除独立 `Lifecycle`                                                                      |
+| Context 相关描述                         | 移除 `ctx.log_info()`、`ctx.schedule_tell()` 等不存在的 API                                                            |
